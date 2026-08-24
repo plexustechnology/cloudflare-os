@@ -21,6 +21,7 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   openai: 'OpenAI',
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
+  'azure-foundry': 'Azure Foundry',
   ollama: 'Ollama',
 }
 
@@ -30,6 +31,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   openai: 'sk-...',
   google: 'AIza...',
   cloudflare: 'Cloudflare API token',
+  'azure-foundry': 'Azure Foundry API key',
   ollama: '(optional)',
 }
 
@@ -66,10 +68,10 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
   for (const provider of providerOrder) {
-    if (enabledProviders && !enabledProviders.has(provider)) continue
+    if (enabledProviders && provider !== 'azure-foundry' && !enabledProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.
-    if (!gatewayMode) {
+    if (!gatewayMode || provider === 'azure-foundry') {
       for (const [modelId, model] of Object.entries(SUGGESTED_MODELS[provider])) {
         options.push({
           value: encodeSelection(provider, modelId),
@@ -79,7 +81,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
       }
     }
 
-    options.push({
+    if (!(gatewayMode && provider === 'azure-foundry')) options.push({
       value: encodeSelection(provider),
       label: `Other ${PROVIDER_LABELS[provider] || provider}...`,
       provider,

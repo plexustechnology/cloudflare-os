@@ -549,7 +549,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
     let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig && !gwConfig.providers.has(config.provider)) {
+    if (gwConfig && config.provider !== "azure-foundry" && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
 
@@ -562,7 +562,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig) {
       for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-        if (gwConfig.providers.has(provider) && id in models) {
+        if ((gwConfig.providers.has(provider) || provider === "azure-foundry" && gwConfig.azureFoundry) && id in models) {
           throw new Error(`Cannot delete built-in model "${models[id].name}".`);
         }
       }

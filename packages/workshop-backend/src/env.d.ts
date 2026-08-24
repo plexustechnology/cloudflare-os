@@ -21,6 +21,9 @@ declare global {
       CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
                                           // applies (still required for google)
       CF_AI_GATEWAY_USE_BINDING?: string;
+      AZURE_FOUNDRY_ENDPOINT?: string;
+      AZURE_FOUNDRY_MODEL?: string;
+      AZURE_FOUNDRY_API_KEY?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.
 

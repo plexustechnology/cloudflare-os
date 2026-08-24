@@ -405,6 +405,27 @@ describe("getModel direct routing (no gateway)", () => {
     capturedRequests.length = 0;
   });
 
+  it("routes Azure Foundry directly with the api-key header even when AI Gateway is enabled", async () => {
+    const handle = getModel(env(), {
+      provider: "azure-foundry",
+      model: "gpt-5.6-sol-1",
+      apiToken: "azure-api-key",
+      apiUrl: "https://plexustechnology.services.ai.azure.com/openai/v1",
+    }, INITIATOR);
+
+    expect(handle.model.api).toBe("openai-responses");
+    expect(handle.model.baseUrl).toBe(
+        "https://plexustechnology.services.ai.azure.com/openai/v1");
+    expect(handle.aiGatewayLogRoute).toBeUndefined();
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe(
+        "https://plexustechnology.services.ai.azure.com/openai/v1/responses");
+    expect(request.headers.get("api-key")).toBe("azure-api-key");
+    expect(request.headers.get("authorization")).toBeNull();
+    expect(request.headers.get("cf-aig-metadata")).toBeNull();
+  }, 15000);
+
   it("uses the provider defaults and the config's own credentials", async () => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "anthropic",

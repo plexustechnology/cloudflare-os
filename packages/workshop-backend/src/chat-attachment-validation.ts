@@ -35,6 +35,7 @@ const isTextImageOrPdfMime = (mimeType: string) =>
 const ATTACHMENT_SUPPORT_BY_PROVIDER = {
   anthropic: isTextImageOrPdfMime,
   openai: isTextImageOrPdfMime,
+  "azure-foundry": isTextImageOrPdfMime,
   google: isTextImageOrPdfMime,
   cloudflare: isTextOrImageMime,
   ollama: isTextOrImageMime,

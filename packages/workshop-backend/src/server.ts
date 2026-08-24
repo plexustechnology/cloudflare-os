@@ -202,7 +202,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (gwConfig) {
       return Promise.resolve({
         enabled: true,
-        enabledProviders: [...gwConfig.providers] as AiModelProvider[],
+        enabledProviders: [
+          ...gwConfig.providers,
+          ...(gwConfig.azureFoundry ? ["azure-foundry"] : []),
+        ] as AiModelProvider[],
       });
     } else {
       return Promise.resolve({ enabled: false });

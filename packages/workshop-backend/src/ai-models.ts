@@ -131,6 +131,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
   switch (provider) {
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
     case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
+    case "azure-foundry": return undefined;
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
@@ -356,6 +357,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  if (config.provider === "azure-foundry") return getModelDirect(config, options.sessionAffinity);
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -637,6 +639,18 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           compat: catalog?.compat,
         },
         apiKey: config.apiToken,
+        sessionAffinity,
+      });
+    case "azure-foundry":
+      if (!config.apiToken) throw new Error("Azure Foundry model has no API key configured.");
+      return makeHandle({
+        model: {
+          id: config.model, name: catalog?.name ?? config.model, api: "openai-responses",
+          provider: "azure-foundry", baseUrl: config.apiUrl ?? "https://plexustechnology.services.ai.azure.com/openai/v1",
+          reasoning: true, input: ["text", "image"], cost: ZERO_COST, ...window,
+        },
+        apiKey: "unused",
+        headers: {Authorization: null, "api-key": config.apiToken},
         sessionAffinity,
       });
     default:
