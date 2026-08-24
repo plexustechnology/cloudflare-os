@@ -13,6 +13,7 @@ export class AiGatewayConfig {
   readonly accountId: string;
   readonly apiToken: string;
   readonly providers: Set<string>;
+  readonly azureFoundry?: { endpoint: string; model: string; apiKey: string };
 
   constructor(env: Cloudflare.Env) {
     this.gateway = env.CF_AI_GATEWAY!;
@@ -36,6 +37,17 @@ export class AiGatewayConfig {
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );
+    if (env.AZURE_FOUNDRY_ENDPOINT && env.AZURE_FOUNDRY_MODEL && env.AZURE_FOUNDRY_API_KEY) {
+      this.azureFoundry = {
+        endpoint: env.AZURE_FOUNDRY_ENDPOINT,
+        model: env.AZURE_FOUNDRY_MODEL,
+        apiKey: env.AZURE_FOUNDRY_API_KEY,
+      };
+    }
+  }
+
+  private providerEnabled(provider: string): boolean {
+    return provider === "azure-foundry" ? Boolean(this.azureFoundry) : this.providers.has(provider);
   }
 
   /**
@@ -44,8 +56,9 @@ export class AiGatewayConfig {
   getModelList(): AiChatAuthorInfo[] {
     let result: AiChatAuthorInfo[] = [];
     for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-      if (this.providers.has(provider)) {
+      if (this.providerEnabled(provider)) {
         for (let [id, model] of Object.entries(models)) {
+          if (provider === "azure-foundry" && id !== this.azureFoundry?.model) continue;
           result.push({ type: "agent", id, name: model.name });
         }
       }
@@ -59,7 +72,9 @@ export class AiGatewayConfig {
    */
   resolveModel(modelId: string): UserAiModelRecord | undefined {
     for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-      if (this.providers.has(provider) && modelId in models) {
+      if (this.providerEnabled(provider) && modelId in models) {
+        const azure = provider === "azure-foundry" ? this.azureFoundry : undefined;
+        if (provider === "azure-foundry" && modelId !== azure?.model) continue;
         return {
           profile: { type: "agent", id: modelId, name: models[modelId].name },
           config: {
@@ -68,7 +83,8 @@ export class AiGatewayConfig {
             // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
             // reads the real values from env. We set them to empty strings here to satisfy
             // the type.
-            apiToken: "",
+            apiToken: azure?.apiKey ?? "",
+            ...(azure ? { apiUrl: azure.endpoint } : {}),
           },
         };
       }
