@@ -1,6 +1,6 @@
 import { logRpcFailure } from '../rpcErrors'
 import { useState, useEffect } from 'react'
-import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
+import { createRootRoute, Outlet, useRouter, useRouterState } from '@tanstack/react-router'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
@@ -13,6 +13,10 @@ import AppShell from '../components/AppShell/AppShell'
 import LoginPage from '../LoginPage'
 import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
+import { TeamsTabRoot } from '../features/teams/TeamsTabRoot'
+import { TeamsAppShell } from '../features/teams/TeamsAppShell'
+import { isTeamsRoute } from '../features/teams/teamsHost'
+import { appPathFromTeamsPath, pathWithRouterBasepath } from '../features/teams/teamsNavigation'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -22,11 +26,15 @@ function RootComponent() {
   const rpcStub = useRpcStub()
   const connectionLost = useConnectionLost()
   const { isAuthenticated, authenticatedApi, isLoading, error, logout, login } = useAuth(rpcStub)
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const router = useRouter()
+  const location = useRouterState({ select: (s) => s.location })
+  const pathname = pathWithRouterBasepath(location.pathname, router.basepath)
+  const isTeamsSurface = isTeamsRoute(pathname)
+  const applicationPathname = appPathFromTeamsPath(pathname) ?? pathname
 
   // Routes that don't require auth (public routes)
-  const isSignup = pathname === '/signup'
-  const isBlueprint = pathname.startsWith('/blueprint/')
+  const isSignup = applicationPathname === '/signup'
+  const isBlueprint = applicationPathname.startsWith('/blueprint/')
 
   // A standalone (no app shell) render is used only for signed-out visitors of public routes.
   // Signed-in users get the full app chrome so public pages (esp. the blueprint detail) feel
@@ -35,13 +43,43 @@ function RootComponent() {
 
   // The workspace editor renders fullscreen (no app chrome). /gadget/ is the legacy URL, kept
   // here so the chrome doesn't flash in during the redirect to /workspace/.
-  const isWorkspaceEditor = pathname.startsWith('/workspace/') || pathname.startsWith('/gadget/')
+  const isWorkspaceEditor = applicationPathname.startsWith('/workspace/') || applicationPathname.startsWith('/gadget/')
 
   const handleLoginSuccess = () => {
     const token = localStorage.getItem('authToken')
     if (token) {
       login(token)
     }
+  }
+
+  if (isTeamsSurface) {
+    return (
+      <TeamsTabRoot
+        authenticatedApi={authenticatedApi}
+        authError={error}
+        isAuthLoading={isLoading}
+        pathname={pathname}
+        search={location.searchStr}
+        navigateTo={(destination) => router.history.replace(`/teams${destination}`)}
+        onRetrySession={() => {
+          if (CF_ACCESS_MODE) window.location.reload()
+          else {
+            const token = localStorage.getItem('authToken')
+            if (token) login(token)
+            else window.location.reload()
+          }
+        }}
+      >
+        {authenticatedApi && (
+          <AuthenticatedExperience
+            authenticatedApi={authenticatedApi}
+            isWorkspaceEditor={isWorkspaceEditor}
+            teamsSurface
+            logout={logout}
+          />
+        )}
+      </TeamsTabRoot>
+    )
   }
 
   // Loading state
@@ -105,7 +143,15 @@ function RootComponent() {
   // authenticatedApi is guaranteed non-null here: isLoading, error, and
   // !isAuthenticated branches all return early above.
   if (!authenticatedApi) return null
-  return (
+  return <AuthenticatedExperience authenticatedApi={authenticatedApi} isWorkspaceEditor={isWorkspaceEditor} logout={logout} />
+}
+
+const AuthenticatedExperience = ({ authenticatedApi, isWorkspaceEditor, teamsSurface = false, logout }: {
+  authenticatedApi: RpcStub<AuthenticatedApi>
+  isWorkspaceEditor: boolean
+  logout: () => void
+  teamsSurface?: boolean
+}) => (
     <AuthProvider authenticatedApi={authenticatedApi} onLogout={logout}>
       <FeatureFlagsProvider>
         <TooltipProvider>
@@ -113,13 +159,13 @@ function RootComponent() {
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}
+              teamsSurface={teamsSurface}
             />
           </Toasty>
         </TooltipProvider>
       </FeatureFlagsProvider>
     </AuthProvider>
-  )
-}
+)
 
 /**
  * Inner shell that checks onboarding status and either shows the wizard
@@ -129,9 +175,11 @@ function RootComponent() {
 function AuthenticatedShell({
   authenticatedApi,
   isWorkspaceEditor,
+  teamsSurface,
 }: {
   authenticatedApi: RpcStub<AuthenticatedApi>
   isWorkspaceEditor: boolean
+  teamsSurface: boolean
 }) {
   // null = still checking, true = needs onboarding, false = onboarding done
   const [onboardingNeeded, setOnboardingNeeded] = useState<boolean | null>(null)
@@ -166,6 +214,7 @@ function AuthenticatedShell({
   // gets the persistent left-rail AppShell. Connection loss is surfaced by a chip in whichever of
   // those two top bars is showing, never by a banner that reflows the page (see ReconnectingChip).
   const fullscreen = isWorkspaceEditor
+  const Shell = teamsSurface ? TeamsAppShell : AppShell
   return (
     <>
       <AccountSelectionModal />
@@ -174,9 +223,9 @@ function AuthenticatedShell({
           <Outlet />
         </main>
       ) : (
-        <AppShell>
+        <Shell>
           <Outlet />
-        </AppShell>
+        </Shell>
       )}
     </>
   )

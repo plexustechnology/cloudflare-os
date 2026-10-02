@@ -1,3 +1,4 @@
+import { appPathFromTeamsPath } from '../../features/teams/teamsNavigation'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Desktop, Moon, Plug, Sun } from '@phosphor-icons/react'
 import { Tooltip } from '@cloudflare/kumo'
@@ -53,7 +54,8 @@ function StripLink({
   label: string
   children: React.ReactNode
 }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const routerPathname = useRouterState({ select: (s) => s.location.pathname })
+  const pathname = appPathFromTeamsPath(routerPathname) ?? routerPathname
   const active = pathname === to
   return (
     <Tooltip content={label}>

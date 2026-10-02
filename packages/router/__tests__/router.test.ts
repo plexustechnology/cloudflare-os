@@ -104,6 +104,39 @@ describe('router email', () => {
   });
 });
 
+describe('Teams framing policy', () => {
+  const csp = "default-src 'self'; connect-src 'self' wss:; frame-ancestors 'none'";
+  const fetcher = {
+    fetch: async () => new Response('frontend', {
+      headers: { 'Content-Security-Policy': csp, 'X-Frame-Options': 'DENY', 'Cache-Control': 'max-age=60' },
+    }),
+  } as unknown as Fetcher;
+
+  it.each(['/teams', '/teams/', '/teams/workspace/abc'])('allows Teams framing on %s while retaining other directives', async (path) => {
+    const response = await router.fetch!(new Request(`https://example.com${path}`), makeEnv({ ASSETS: fetcher }), {} as ExecutionContext);
+    const policy = response.headers.get('Content-Security-Policy');
+    expect(policy).toContain("default-src 'self'");
+    expect(policy).toContain("connect-src 'self' wss:");
+    expect(policy).toContain('frame-ancestors https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft');
+    expect(policy?.match(/frame-ancestors/g)).toHaveLength(1);
+    expect(response.headers.has('X-Frame-Options')).toBe(false);
+    expect(response.headers.get('Cache-Control')).toBe('max-age=60');
+    expect(await response.text()).toBe('frontend');
+  });
+
+  it.each(['/', '/workspaces', '/teams-other', '/api/workshop'])('preserves ordinary headers on %s', async (path) => {
+    const response = await router.fetch!(new Request(`https://example.com${path}`), makeEnv({ ASSETS: fetcher, WORKSHOP_BACKEND: fetcher }), {} as ExecutionContext);
+    expect(response.headers.get('Content-Security-Policy')).toBe(csp);
+    expect(response.headers.get('X-Frame-Options')).toBe('DENY');
+  });
+
+  it('applies the same policy to the development frontend fallback', async () => {
+    const response = await router.fetch!(new Request('https://example.com/teams/workspaces'), makeEnv({ WORKSHOP_BACKEND: fetcher }), {} as ExecutionContext);
+    expect(response.headers.get('Content-Security-Policy')).toContain('https://teams.microsoft.com');
+    expect(response.headers.has('X-Frame-Options')).toBe(false);
+  });
+});
+
 // The deploy service renders customer instances from this config (via the release manifest), so
 // the asset-routing contract must hold: worker-first prefixes cover every dynamic route, or asset
 // 404 handling would swallow API and gatekeeper traffic.
@@ -117,6 +150,8 @@ describe('wrangler.jsonc contract', () => {
     expect(first).toContain('/blueprint-screenshot');
     expect(first).toContain('/blueprint-screenshot/*');
     expect(first).toContain('/gatekeeper/*');
+    expect(first).toContain('/teams');
+    expect(first).toContain('/teams/*');
   });
 
   it('serves the frontend as a single-page application', () => {

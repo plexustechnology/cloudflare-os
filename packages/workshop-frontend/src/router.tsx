@@ -1,9 +1,11 @@
 import { createRouter as createTanStackRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
+import { routerBasepath } from './features/teams/teamsNavigation'
 
-export function createRouter() {
+export function createRouter(pathname = typeof window === 'undefined' ? '/' : window.location.pathname) {
   return createTanStackRouter({
     routeTree,
+    basepath: routerBasepath(pathname),
     scrollRestoration: true,
     defaultPreload: 'intent',
     defaultPreloadStaleTime: 0,

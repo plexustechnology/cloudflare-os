@@ -22,13 +22,20 @@ function getInitialThemeState() {
   return { themeMode, resolvedThemeMode: resolveThemeMode(themeMode) }
 }
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
+export function ThemeProvider({ children, hostTheme }: { children: ReactNode; hostTheme?: ResolvedThemeMode }) {
   const [themeState, setThemeState] = useState(getInitialThemeState)
-  const { themeMode, resolvedThemeMode } = themeState
+  const { themeMode } = themeState
+  const resolvedThemeMode = themeMode === 'system' && hostTheme
+    ? hostTheme : themeState.resolvedThemeMode
 
   useEffect(() => {
     if (themeMode !== 'system') {
       applyThemeMode(themeMode)
+      return
+    }
+
+    if (hostTheme) {
+      applyThemeMode(hostTheme)
       return
     }
 
@@ -39,18 +46,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         ? prev
         : { ...prev, resolvedThemeMode: nextResolved })
     }
+    // Reapply the browser preference when leaving a host-provided theme.
+    handleChange()
     mediaQuery.addEventListener('change', handleChange)
     return () => mediaQuery.removeEventListener('change', handleChange)
-  }, [themeMode])
+  }, [themeMode, hostTheme])
 
   const value = useMemo<ThemeContextValue>(() => ({
     themeMode,
     resolvedThemeMode,
     setThemeMode: (mode) => {
       writeThemeMode(mode)
-      setThemeState({ themeMode: mode, resolvedThemeMode: applyThemeMode(mode) })
+      setThemeState({ themeMode: mode, resolvedThemeMode: applyThemeMode(mode === 'system' && hostTheme ? hostTheme : mode) })
     },
-  }), [themeMode, resolvedThemeMode])
+  }), [themeMode, resolvedThemeMode, hostTheme])
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

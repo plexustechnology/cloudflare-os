@@ -13,6 +13,8 @@ import './styles.css'
 import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
+import { TeamsHostGate, useTeamsHost } from './features/teams/TeamsHostGate'
+import { isTeamsRoute } from './features/teams/teamsHost'
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -156,7 +158,7 @@ function handleBroken(error: unknown) {
 // tab-visible / network-online signals probe the connection instead of letting the user's next
 // action hang on a zombie socket.
 async function probeOnWake() {
-  if (isConnectionLost || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
+  if (!currentStub || isConnectionLost || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
   probing = true;
   const suspect = currentStub;
   try {
@@ -180,16 +182,26 @@ window.addEventListener('online', () => void probeOnWake());
 
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
-let currentStub = startConnection();
+let currentStub: RpcStub<PublicApi> | undefined = isTeamsRoute(window.location.pathname)
+  ? undefined : startConnection();
+
+function getCurrentConnection(): RpcStub<PublicApi> {
+  if (!currentStub) {
+    currentStub = startConnection();
+    devAutoLogin(currentStub).catch(() => {});
+  }
+  return currentStub;
+}
 
 const router = createRouter()
 applyStoredThemeMode()
 
 function AppWithConnection() {
-  const [rpcState, setRpcState] = useState<{stub: RpcStub<PublicApi>; connectionLost: boolean}>({
-    stub: currentStub,
+  const teamsHost = useTeamsHost()
+  const [rpcState, setRpcState] = useState<{stub: RpcStub<PublicApi>; connectionLost: boolean}> (() => ({
+    stub: getCurrentConnection(),
     connectionLost: isConnectionLost,
-  });
+  }));
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [serverConfigError, setServerConfigError] = useState(false);
 
@@ -217,7 +229,7 @@ function AppWithConnection() {
   }, []);
 
   useEffect(() => {
-    const cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
+    const cb = () => setRpcState({ stub: getCurrentConnection(), connectionLost: isConnectionLost });
     subscribers.add(cb);
     return () => { subscribers.delete(cb); };
   }, []);
@@ -250,7 +262,7 @@ function AppWithConnection() {
   }, [serverConfig]);
 
   return (
-    <ThemeProvider>
+    <ThemeProvider hostTheme={teamsHost ? (teamsHost.theme === 'light' ? 'light' : 'dark') : undefined}>
       <RpcContext.Provider value={rpcState}>
         <ServerConfigErrorContext.Provider value={serverConfigError}>
           <ServerConfigContext.Provider value={serverConfig}>
@@ -277,12 +289,14 @@ const root = createRoot(document.getElementById('root')!, {
 // useAuth checks the token, the user skips the login page. If the backend
 // is unreachable, the app still renders immediately (showing a connection
 // banner or login page) instead of hanging on a blank screen.
-devAutoLogin(currentStub).catch(() => {})
+if (currentStub) devAutoLogin(currentStub).catch(() => {})
 
 root.render(
   <StrictMode>
     <FrontendErrorBoundary>
-      <AppWithConnection />
+      <TeamsHostGate>
+        <AppWithConnection />
+      </TeamsHostGate>
     </FrontendErrorBoundary>
   </StrictMode>
 )

@@ -1,3 +1,4 @@
+import { appPathFromTeamsPath } from '../../features/teams/teamsNavigation'
 import { Link, useRouterState, type LinkProps } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
@@ -29,7 +30,8 @@ export default function SidebarItem({
 }: SidebarItemProps) {
   // Resolve the active path manually so we can style the icon as well as the row. For parameterized
   // routes (e.g. "/gatekeepers/$appId"), substitute the params so the resolved path can match.
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const routerPathname = useRouterState({ select: (s) => s.location.pathname })
+  const pathname = appPathFromTeamsPath(routerPathname) ?? routerPathname
   let target = typeof to === 'string' ? to : ''
   if (params) {
     for (const [key, value] of Object.entries(params as Record<string, string>)) {

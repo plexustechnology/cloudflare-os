@@ -37,9 +37,12 @@ import SidebarUtilityStrip from './SidebarUtilityStrip'
 export default function Sidebar({
   collapsed,
   onToggleCollapsed,
+  layout,
 }: {
   collapsed: boolean
   onToggleCollapsed: () => void
+  /** Teams container geometry; omitted for ordinary browser chrome. */
+  layout?: { expandedWidth: '216px' | '240px'; collapsible: boolean }
 }) {
   const siteName = useSiteName()
   // Gatekeeper-served management apps the user can reach now (one per gatekeeper that provides a UI
@@ -50,6 +53,7 @@ export default function Sidebar({
   return (
     <aside
       aria-label="Primary"
+      style={!collapsed && layout ? { width: layout.expandedWidth } : undefined}
       className={[
         // Sidebar is the app chrome: a hair greyer than the (lighter) content canvas so the two
         // surfaces read as distinct without a heavy divider.
@@ -86,7 +90,7 @@ export default function Sidebar({
             >
               <MagnifyingGlass size={15} />
             </button>
-            <button
+            {(!layout || layout.collapsible) && <button
               type="button"
               onClick={onToggleCollapsed}
               aria-label="Collapse sidebar"
@@ -94,13 +98,13 @@ export default function Sidebar({
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <SidebarSimple size={15} />
-            </button>
+            </button>}
           </div>
         )}
       </div>
 
       {/* Expand affordance when collapsed — placed just under the logo for discoverability. */}
-      {collapsed && (
+      {collapsed && (!layout || layout.collapsible) && (
         <button
           type="button"
           onClick={onToggleCollapsed}

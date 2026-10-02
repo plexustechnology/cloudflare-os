@@ -12,6 +12,29 @@
 type EmailEntrypoint = CloudflareWorkersModule.WorkerEntrypoint &
     Required<Pick<CloudflareWorkersModule.WorkerEntrypoint, "email">>;
 
+const TEAMS_FRAME_ANCESTORS =
+  "frame-ancestors https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft";
+
+function isTeamsPath(pathname: string): boolean {
+  return pathname === "/teams" || pathname.startsWith("/teams/");
+}
+
+function applyTeamsFramePolicy(response: Response): Response {
+  const headers = new Headers(response.headers);
+  const directives = headers.get("Content-Security-Policy")?.split(";")
+    .map((directive) => directive.trim())
+    .filter((directive) => directive && !/^frame-ancestors(?:\s|$)/i.test(directive)) ?? [];
+  directives.push(TEAMS_FRAME_ANCESTORS);
+  headers.set("Content-Security-Policy", directives.join("; "));
+  // X-Frame-Options cannot express the narrowly scoped Teams host allowlist.
+  headers.delete("X-Frame-Options");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export interface Env {
   WORKSHOP_BACKEND: Fetcher;
   /** Present in production (wrangler.jsonc assets stanza); absent in dev. */
@@ -45,7 +68,8 @@ export default {
     // callbacks.
 
     if (env.ASSETS) {
-      return env.ASSETS.fetch(req);
+      const response = await env.ASSETS.fetch(req);
+      return isTeamsPath(url.pathname) ? applyTeamsFramePolicy(response) : response;
     }
 
     // Dev only: with no assets binding here, everything else goes to the backend.
@@ -56,7 +80,8 @@ export default {
     // expected here -- run the Vite dev server with `pnpm dev-client` and open localhost:3000
     // directly instead. (We don't try to forward to localhost:3000 becaues it doesn't work well:
     // Vite's HMR socket gets disconnected every time wrangler restarts workerd.)
-    return env.WORKSHOP_BACKEND.fetch(req);
+    const response = await env.WORKSHOP_BACKEND.fetch(req);
+    return isTeamsPath(url.pathname) ? applyTeamsFramePolicy(response) : response;
   },
 
   async email(message, env) {

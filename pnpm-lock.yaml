@@ -1021,6 +1021,9 @@ importers:
       '@lezer/highlight':
         specifier: ^1.2.3
         version: 1.2.3
+      '@microsoft/teams-js':
+        specifier: 2.55.0
+        version: 2.55.0(supports-color@10.2.2)
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -2035,6 +2038,9 @@ packages:
 
   '@marijn/find-cluster-break@1.0.3':
     resolution: {integrity: sha512-FY+MKLBoTsLNJF/eLWaOsXGdz6uh3Iu1axjPf6TUq92IYumcTcXWHoS747JARLkcdlJ/Waiaxc5wQfFO8jC6NA==}
+
+  '@microsoft/teams-js@2.55.0':
+    resolution: {integrity: sha512-2WuCoqdkF7CRhVvvBJbKWZL6OTSNr+rrrRAK5akV0VoEnil6f1OyMvKvwCUCe5fCM91uKIjC4NGjWfyp6JEwrw==}
 
   '@modelcontextprotocol/client@2.0.0':
     resolution: {integrity: sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==}
@@ -6319,6 +6325,13 @@ snapshots:
       '@lezer/lr': 1.4.10
 
   '@marijn/find-cluster-break@1.0.3': {}
+
+  '@microsoft/teams-js@2.55.0(supports-color@10.2.2)':
+    dependencies:
+      base64-js: 1.5.1
+      debug: 4.4.3(supports-color@10.2.2)
+    transitivePeerDependencies:
+      - supports-color
 
   '@modelcontextprotocol/client@2.0.0':
     dependencies:
