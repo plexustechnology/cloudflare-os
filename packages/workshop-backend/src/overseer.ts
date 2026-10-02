@@ -5269,8 +5269,9 @@ class OverseerImpl implements AgentHooks {
     responseTargetRegistration?: ExternalMessageResponseTargetRegistration,
     externalChatKey?: string,
     formats?: MessageFormatRef[],
+    externalCommitGuard?: () => void,
   ): Promise<number> {
-    if (responseTargetRegistration) {
+    if (responseTargetRegistration && !externalCommitGuard) {
       let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
       if (decision.reuseExisting) return decision.record.chatId;
     }
@@ -5281,6 +5282,12 @@ class OverseerImpl implements AgentHooks {
         attachments, userMeta.aiModel?.config.provider);
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
+
+    externalCommitGuard?.();
+    if (responseTargetRegistration && externalCommitGuard) {
+      let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
+      if (decision.reuseExisting) return decision.record.chatId;
+    }
 
     // No code base is established at creation: gadgets pin lazily, when their code is first
     // modified in the chat (see ChatCodeBase). Until then the chat reads committed code live at
@@ -5350,8 +5357,9 @@ class OverseerImpl implements AgentHooks {
     attachments?: ChatAttachmentHandle[],
     responseTargetRegistration?: ExternalMessageResponseTargetRegistration,
     formats?: MessageFormatRef[],
+    externalCommitGuard?: () => void,
   ): Promise<void> {
-    if (responseTargetRegistration) {
+    if (responseTargetRegistration && !externalCommitGuard) {
       let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
       if (decision.reuseExisting) return;
     }
@@ -5360,10 +5368,22 @@ class OverseerImpl implements AgentHooks {
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
         attachments, userMeta.aiModel?.config.provider);
-    this.assertChatNotActive(chatId);
-    using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
+    if (!externalCommitGuard) this.assertChatNotActive(chatId);
+    // A collaborator's external turn must not reserve the chat before its final guard: disposing
+    // that reservation after a denial could release pending callbacks into a new agent turn.
+    using _chatMessageReservation = externalCommitGuard
+      ? undefined : this.reserveChatMessagePreparation(chatId);
     let prepared = await this.#prepareChatMessage(
         message, (canonicalAttachments?.length ?? 0) > 0);
+
+    externalCommitGuard?.();
+    if (responseTargetRegistration && externalCommitGuard) {
+      let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
+      if (decision.reuseExisting) return;
+    }
+    if (externalCommitGuard) this.assertChatNotActive(chatId);
+    using _externalChatMessageReservation = externalCommitGuard
+      ? this.reserveChatMessagePreparation(chatId) : undefined;
 
     let meta = this.assertChatNotActive(chatId, true);
     let result = this.materializeChatChanges(chatId, meta);
@@ -8037,6 +8057,38 @@ class OverseerImpl implements AgentHooks {
     this.storage.observers.put({profileId, observerId, accountChoices});
   }
 
+  // The external caller has just passed noninteractive verification. Capture only local state;
+  // the returned guard must run after chat preparation without another await before prompt commit.
+  createExternalMessageCommitGuard(
+      profileId: string, sharing: SharingManager, denied: Error): () => void {
+    let inScopeIds = this.#inScopeGatekeepers("build").map(gk => gk.id).toSorted((a, b) => a - b);
+    let record = this.storage.observers.get(profileId);
+    if (inScopeIds.some(id => record?.accountChoices[id] === undefined)) {
+      throw denied;
+    }
+    let observerId = record?.observerId;
+    let accountChoices = JSON.stringify(record?.accountChoices ?? {});
+
+    return () => {
+      try {
+        let currentIds = this.#inScopeGatekeepers("build").map(gk => gk.id)
+          .toSorted((a, b) => a - b);
+        let currentRecord = this.storage.observers.get(profileId);
+        if (this.storage.prohibitAllSharing.get() ||
+            sharing.getEffectiveRole(profileId) !== "build" ||
+            currentIds.length !== inScopeIds.length ||
+            currentIds.some((id, index) => id !== inScopeIds[index]) ||
+            currentRecord?.observerId !== observerId ||
+            JSON.stringify(currentRecord?.accountChoices ?? {}) !== accountChoices) {
+          throw denied;
+        }
+      } catch {
+        // A malformed or changing local authorization snapshot also fails closed.
+        throw denied;
+      }
+    };
+  }
+
   // Render the observer verification failures as one line per binding, naming the connection and the
   // account that was refused: `<resourceTitle> (<account label>) — <reason>`. Cold path only (we're
   // about to deny the open), so the extra User DO round trip per failure is fine. Discloses nothing
@@ -8396,7 +8448,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
     let externalChat = this.impl.storage.externalChats.get(externalChatKey);
     if (externalChat && !this.impl.storage.chatMeta.get(externalChat.chatId)) {
-      this.impl.storage.externalChats.delete(externalChat.externalChatKey);
+      // A fresh authorized chat commit replaces this mapping; denied turns must not delete it.
       externalChat = undefined;
     }
     return externalChat;
@@ -8434,6 +8486,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Caller must be the owner or a build collaborator.
+    let sharing: SharingManager | undefined;
     if (ownerId !== callerId) {
       if (this.impl.storage.prohibitAllSharing.get()) {
         return {
@@ -8441,17 +8494,42 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           message: "This workspace has sharing disabled, so only its owner can access it.",
         };
       }
-      let role = (await this.impl.getSharingManager()).getEffectiveRole(callerProfile.id);
+      sharing = await this.impl.getSharingManager();
+      let role = sharing.getEffectiveRole(callerProfile.id);
       if (role !== "build") {
         return {
           accepted: false,
           message: "You do not have access to interact with this workspace through its agent.",
         };
       }
+
+      // External turns have no configuration channel. Reconcile owner-provided capabilities
+      // before verifying this collaborator, then deny before touching the chat if they need
+      // to configure an account or a gatekeeper has revoked their observer access.
+      try {
+        await this.impl.ensureAmbientCapsules();
+        await this.impl.ensureObserver(callerProfile.id, caller, role);
+      } catch (err) {
+        this.impl.logger.warn("external collaborator observer precheck failed", {
+          event: "external.message.observer.verify.failed", error: err,
+        });
+        return {
+          accepted: false,
+          message: "Open this workspace in the Workshop to verify your access before trying again.",
+        };
+      }
     }
 
     // Complete pending registration in the owner's UserDO.
     if (this.impl.storage.ownerRegistrationPending.get()) {
+      if (sharing) {
+        // Only the owner may finish bootstrap. A collaborator's final guard may still reject;
+        // do not mutate owner registration on behalf of a turn that has not committed.
+        return {
+          accepted: false,
+          message: "Open this workspace in the Workshop to verify your access before trying again.",
+        };
+      }
       let owner = this.impl.users.get(this.impl.users.idFromString(ownerId));
       await owner.ensureGadgetRegistered(this.ctx.id.toString(), this.impl.storage.title.get());
       this.impl.storage.ownerRegistrationPending.put(false);
@@ -8483,6 +8561,31 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       };
     }
 
+    // Model resolution can interleave with sharing and Gatekeeper changes. Verify again, then
+    // hold a local snapshot for the synchronous segment between chat preparation and commit.
+    let externalCommitGuard: (() => void) | undefined;
+    let commitAccessDenied = new Error("External collaborator access changed.");
+    if (sharing) {
+      try {
+        if (this.impl.storage.prohibitAllSharing.get() ||
+            sharing.getEffectiveRole(callerProfile.id) !== "build") {
+          throw commitAccessDenied;
+        }
+        await this.impl.ensureAmbientCapsules();
+        await this.impl.ensureObserver(callerProfile.id, caller, "build");
+        externalCommitGuard = this.impl.createExternalMessageCommitGuard(
+            callerProfile.id, sharing, commitAccessDenied);
+      } catch (err) {
+        this.impl.logger.warn("external collaborator commit verification failed", {
+          event: "external.message.commit.verify.failed", error: err,
+        });
+        return {
+          accepted: false,
+          message: "Open this workspace in the Workshop to verify your access before trying again.",
+        };
+      }
+    }
+
     // Re-check because another request may have created the external chat while resolving the model.
     externalChat = this.#getExternalChat(input.externalChatKey);
 
@@ -8492,27 +8595,39 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       chatGatewayRpcTarget: input.chatGatewayRpcTarget,
     };
     let chatId: number;
-    if (externalChat) {
-      await this.impl.sendChatMessage(
-        caller,
-        userContext,
-        externalChat.chatId,
-        input.prompt,
-        undefined,
-        undefined,
-        responseTargetRegistration,
-      );
-      chatId = externalChat.chatId;
-    } else {
-      chatId = await this.impl.newChat(
-        caller,
-        userContext,
-        input.prompt,
-        undefined,
-        undefined,
-        responseTargetRegistration,
-        input.externalChatKey,
-      );
+    try {
+      if (externalChat) {
+        await this.impl.sendChatMessage(
+          caller,
+          userContext,
+          externalChat.chatId,
+          input.prompt,
+          undefined,
+          undefined,
+          responseTargetRegistration,
+          undefined,
+          externalCommitGuard,
+        );
+        chatId = externalChat.chatId;
+      } else {
+        chatId = await this.impl.newChat(
+          caller,
+          userContext,
+          input.prompt,
+          undefined,
+          undefined,
+          responseTargetRegistration,
+          input.externalChatKey,
+          undefined,
+          externalCommitGuard,
+        );
+      }
+    } catch (err) {
+      if (err !== commitAccessDenied) throw err;
+      return {
+        accepted: false,
+        message: "Open this workspace in the Workshop to verify your access before trying again.",
+      };
     }
 
     return { accepted: true, chatPath: `/workspace/${this.ctx.id.toString()}?chat=${chatId}` };
