@@ -8,6 +8,8 @@
 // The same worker doubles as the dev router (`pnpm dev-server` at the repo root): dev has no
 // `ASSETS` binding, so frontend requests fall through to the backend instead.
 
+import { handleTeamsAccessRequest } from "./teams-access";
+
 // gatekeeper-email's entrypoint: a WorkerEntrypoint whose optional email() handler is present.
 type EmailEntrypoint = CloudflareWorkersModule.WorkerEntrypoint &
     Required<Pick<CloudflareWorkersModule.WorkerEntrypoint, "email">>;
@@ -36,6 +38,12 @@ function applyTeamsFramePolicy(response: Response): Response {
 }
 
 export interface Env {
+  /** Opt-in static Teams sign-in screen; protected callback uses the existing Access policy. */
+  TEAMS_ACCESS_TAB_ENABLED?: string;
+  /** Existing Workshop Access issuer used to verify popup completion and session probes. */
+  CF_ACCESS_ISS?: string;
+  /** Existing Workshop Access audience; the public landing application grants no identity. */
+  CF_ACCESS_AUD?: string;
   WORKSHOP_BACKEND: Fetcher;
   /** Present in production (wrangler.jsonc assets stanza); absent in dev. */
   ASSETS?: Fetcher;
@@ -47,6 +55,8 @@ export interface Env {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    const signIn = await handleTeamsAccessRequest(req, env);
+    if (signIn) return signIn;
 
     for (const key of Object.keys(env)) {
       if (!key.startsWith("GATEKEEPER_")) continue;

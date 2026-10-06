@@ -25,7 +25,7 @@ const frontendBundleTaskOptions = {
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
 const viteBuildCommand =
-  `node --input-type=module -e "process.env.NODE_ENV='production'; await (await import('vite')).build()"`
+  `node --input-type=module -e "process.env.NODE_ENV='production'; const vite = await import('vite'); await vite.build(); await vite.build({configFile:'vite.teams-access.config.ts'})"`
 
 const runConfig = {
   run: {
