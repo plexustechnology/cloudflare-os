@@ -786,6 +786,7 @@ type ExternalMessageSubmitInput = {
   prompt: string;
   chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
   title: string;
+  modelId?: string;
 };
 
 type ExternalChatRecord = {
@@ -8550,7 +8551,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Resolve the caller's profile and model.
-    let userContext = await caller.getExternalMessageChatContext(modelId);
+    let userContext = await caller.getExternalMessageChatContext(modelId, input.modelId);
 
     // The caller must have an available agent model.
     let aiModel = userContext.aiModel;
@@ -8558,7 +8559,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let siteName = resolveSiteName((await readAdminConfig(this.impl.env)).siteName);
       return {
         accepted: false,
-        message: `Your ${siteName} account needs an AI model configured before it can respond.`,
+        message: input.modelId !== undefined
+          ? `The configured ${siteName} chat model is unavailable. Ask the deployment operator to check its configuration.`
+          : `Your ${siteName} account needs an AI model configured before it can respond.`,
       };
     }
 

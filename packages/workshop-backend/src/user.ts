@@ -726,7 +726,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async getExternalMessageChatContext(existingChatModelId: string | null): Promise<UserChatContext> {
+  async getExternalMessageChatContext(existingChatModelId: string | null, modelId?: string): Promise<UserChatContext> {
+    if (modelId !== undefined) {
+      // An explicit gateway choice overrides both thread history and personal preferences.
+      // Only deployment models qualify; a personal model with the same ID cannot replace one.
+      let context = await this.getChatContext(null);
+      context.aiModel = getAiGatewayConfig(this.env)?.resolveModel(modelId);
+      // Auxiliary work such as thread titles must use the same configured provider as the turn.
+      context.quickModel = context.aiModel?.config;
+      return context;
+    }
     let models = await this.listModels();
     // Prefer the existing chat's model, then the user's preferred model, then the first available model.
     let selectedModel = models.find(model => model.id === existingChatModelId)

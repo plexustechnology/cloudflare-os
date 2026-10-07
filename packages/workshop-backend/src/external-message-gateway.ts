@@ -34,6 +34,7 @@ export class ExternalMessageGateway extends WorkerEntrypoint<Cloudflare.Env, Ext
       prompt: input.prompt,
       chatGatewayRpcTarget: input.chatGatewayRpcTarget,
       title: input.gadgetTitle,
+      ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
     });
   }
 }

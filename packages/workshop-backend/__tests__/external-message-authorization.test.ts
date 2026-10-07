@@ -211,12 +211,29 @@ describe.each(["existing", "new"] as const)("external commit guard: %s chat", ch
 });
 
 describe("external submission compatibility", () => {
-  it.each(["existing", "new"] as const)("commits an authorized collaborator's %s chat with its response target", async kind => {
+  it.each([
+    { kind: "existing", override: undefined }, { kind: "new", override: undefined },
+    { kind: "existing", override: "gpt-5.6-sol-1" }, { kind: "new", override: "gpt-5.6-sol-1" },
+  ])("commits an authorized collaborator's $kind chat with model override $override", async ({ kind, override }) => {
     const caller = await createCaller();
+    await runInDurableObject(caller.user, instance => {
+      Reflect.set(instance, "env", {
+        ...Reflect.get(instance, "env"), CF_AI_GATEWAY: "synthetic-gateway",
+        CF_AI_GATEWAY_ACCOUNT_ID: "synthetic-account", CF_AI_GATEWAY_PROVIDERS: "cloudflare",
+        CF_AI_GATEWAY_API_TOKEN: "synthetic-token", WORKERS_AI: undefined,
+        AZURE_FOUNDRY_ENDPOINT: "https://controlled.invalid/openai/v1",
+        AZURE_FOUNDRY_MODEL: "gpt-5.6-sol-1", AZURE_FOUNDRY_API_KEY: "synthetic-key",
+      });
+    });
+    await caller.user.setPreferredModel("test-model");
     await runInDurableObject(env.TEST_OVERSEER.getByName(`external-allowed-${crypto.randomUUID()}`), async instance => {
       const impl = Reflect.get(instance, "impl");
       setupWorkspace(impl, caller.accountId, kind === "existing");
-      if (kind === "existing") await seedPendingCodeChange(impl);
+      if (kind === "existing") {
+        await seedPendingCodeChange(impl);
+        impl.storage.chats.put({ chatId: 7, sequence: 0, timestamp: new Date(0), type: "message",
+          author: { type: "agent", id: "test-model", name: "Old model" }, message: "Old answer" });
+      }
       const start = vi.spyOn(impl, "startAgent").mockImplementation(() => {});
       vi.spyOn(impl, "generateThreadTitle").mockImplementation(() => {});
       // Local RpcTargets cannot survive persistence. Keep just the callback collection write
@@ -225,12 +242,13 @@ describe("external submission compatibility", () => {
       vi.spyOn(impl.storage.gadgetResponseDeliveries, "put").mockImplementation(record => { registration = record; });
       using target = new RpcStub(new ResponseWitness());
       try {
-        const result = await instance.receiveExternalMessage(input(caller.name, target));
+        const result = await instance.receiveExternalMessage({ ...input(caller.name, target), modelId: override });
         expect(result.accepted).toBe(true);
         expect(registration).toMatchObject({ idempotencyKey: "external-message", status: "waiting" });
         const prompt = [...impl.storage.chats.list()].find(message => message.sequence === registration.promptSequence && message.chatId === registration.chatId);
         expect(prompt).toMatchObject({ type: "message", message: privatePrompt, author: callerProfile });
         expect(start).toHaveBeenCalledOnce();
+        expect(start.mock.calls[0][1].profile.id).toBe(override ?? "test-model");
         expect(await impl.getGatekeeperFacet(1).verificationAttempts()).toBe(2);
         if (kind === "existing") {
           expect(impl.listLiveChatChanges(7, 0)).toEqual([]);
@@ -239,6 +257,21 @@ describe("external submission compatibility", () => {
       } finally {
         registration?.chatGatewayRpcTarget[Symbol.dispose]();
       }
+    });
+  });
+
+  it("rejects an unavailable configured model without committing a prompt or starting an agent", async () => {
+    const caller = await createCaller();
+    await runInDurableObject(env.TEST_OVERSEER.getByName(`external-unavailable-${crypto.randomUUID()}`), async instance => {
+      const impl = Reflect.get(instance, "impl");
+      setupWorkspace(impl, caller.accountId, true);
+      const before = promptState(impl);
+      const start = vi.spyOn(impl, "startAgent");
+      using target = new RpcStub(new ResponseWitness());
+      expect(await instance.receiveExternalMessage({ ...input(caller.name, target), modelId: "unavailable" }))
+        .toMatchObject({ accepted: false });
+      expect(promptState(impl)).toEqual(before);
+      expect(start).not.toHaveBeenCalled();
     });
   });
 

@@ -49,6 +49,8 @@ export type SubmitExternalMessageInput = {
   messageKey: string;
   /** Names the workspace if it must be created. */
   gadgetTitle: string;
+  /** Deployment catalog model override for this turn; unavailable models must not fall back. */
+  modelId?: string;
   /** User text sent to Gadgets. */
   prompt: string;
   /** Persistent target invoked when the Gadget response is ready. */
