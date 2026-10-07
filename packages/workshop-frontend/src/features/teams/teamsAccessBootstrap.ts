@@ -1,17 +1,19 @@
 import { app, authentication } from '@microsoft/teams-js'
 import { parseTeamsReturnPath } from './teamsNavigation'
 
+const ENTRY_PATH = '/teams/sign-in'
 const CALLBACK_PATH = '/teams/auth-complete'
 const STATE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const TIMEOUT_MS = 8_000
+const SIGN_IN_TIMEOUT_MS = 120_000
 
 class TeamsAccessError extends Error {}
 
-async function withTimeout<T>(operation: Promise<T>): Promise<T> {
+async function withTimeout<T>(operation: Promise<T>, timeoutMs = TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([operation, new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('Teams unavailable')), TIMEOUT_MS)
+      timer = setTimeout(() => reject(new TeamsAccessError('Teams did not respond. Close the sign-in window and retry.')), timeoutMs)
     })])
   } finally { if (timer !== undefined) clearTimeout(timer) }
 }
@@ -41,9 +43,12 @@ export async function signInToTeamsAccess({
 }): Promise<void> {
   const state = randomState()
   if (!STATE_PATTERN.test(state)) throw new TeamsAccessError('Invalid sign-in state')
-  const popup = new URL(CALLBACK_PATH, origin)
+  // Let the popup establish its Teams connection on our public page before
+  // Access redirects it through another origin's login screen.
+  const popup = new URL(ENTRY_PATH, origin)
+  popup.searchParams.set('popup', '1')
   popup.searchParams.set('state', state)
-  const result = await authenticate({ url: popup.href, width: 600, height: 650 })
+  const result = await withTimeout(authenticate({ url: popup.href, width: 600, height: 650 }), SIGN_IN_TIMEOUT_MS)
   if (result !== state) throw new TeamsAccessError('Sign-in could not be verified. Please retry.')
   if (!await checkSession()) {
     throw new TeamsAccessError('Teams could not use your sign-in session. You can open Plexus OS in your browser.')
@@ -51,7 +56,7 @@ export async function signInToTeamsAccess({
 }
 
 /** Mount the static sign-in screen and protected popup completion without loading the Workshop. */
-export async function mountSignInScreen(): Promise<void> {
+export async function mountSignInScreen(navigate = (path: string) => window.location.replace(path)): Promise<void> {
   const status = document.getElementById('teams-access-status')
   const button = document.getElementById('teams-access-sign-in')
   const browserLink = document.getElementById('teams-access-browser')
@@ -59,11 +64,23 @@ export async function mountSignInScreen(): Promise<void> {
   const url = new URL(window.location.href)
   let destination = parseTeamsReturnPath(url.searchParams.get('destination') ?? undefined) ?? '/workspaces'
   browserLink.href = destination
+  const isCallback = url.pathname === CALLBACK_PATH
+  const isPopupStart = url.pathname === ENTRY_PATH && url.searchParams.get('popup') === '1'
+  if (isCallback) status.textContent = 'Completing sign-in…'
+  if (isPopupStart) status.textContent = 'Starting sign-in…'
   try {
+    const state = url.searchParams.get('state') ?? ''
+    if ((isCallback || isPopupStart) && !STATE_PATTERN.test(state)) {
+      throw new TeamsAccessError('Invalid sign-in state')
+    }
     await withTimeout(app.initialize())
-    if (url.pathname === CALLBACK_PATH) {
-      const state = url.searchParams.get('state')
-      if (!state || !STATE_PATTERN.test(state)) throw new Error('Invalid sign-in state')
+    if (isPopupStart) {
+      const callback = new URL(CALLBACK_PATH, url.origin)
+      callback.searchParams.set('state', state)
+      navigate(callback.href)
+      return
+    }
+    if (isCallback) {
       authentication.notifySuccess(state)
       status.textContent = 'Signed in. You can close this window.'
       return
@@ -72,7 +89,7 @@ export async function mountSignInScreen(): Promise<void> {
     destination = parseTeamsReturnPath(context.page.subPageId) ?? destination
     browserLink.href = destination
     await withTimeout(app.notifySuccess())
-    const openWorkshop = () => window.location.replace(`/teams${destination}`)
+    const openWorkshop = () => navigate(`/teams${destination}`)
     button.addEventListener('click', async () => {
       button.disabled = true
       status.textContent = 'Complete sign-in in the window that opens.'
