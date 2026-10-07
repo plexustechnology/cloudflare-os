@@ -1,8 +1,28 @@
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
 
+/** A tab-only operation identified from persisted state, never from model-written prose. */
+export type GadgetResponseAction = "connection" | "approval" | "review_changes" | "enable_hook";
+
+/** Immutable snapshot of the originating external turn, captured before callback delivery. */
+export interface GadgetResponseSnapshot {
+  /** Envelope schema; legacy responses lack a structured snapshot. */
+  version: 2;
+  /** Server-derived completion or suspension classification. */
+  outcome: "reply" | "action_required" | "failed";
+  /** Final agent-authored text only; absent on failure or when sharing is prohibited. */
+  text?: string;
+  /** Distinct pending operations belonging to this turn. */
+  actions: GadgetResponseAction[];
+  /** Authoritative Workshop sharing restriction at snapshot creation. */
+  sharing: "allowed" | "blocked";
+}
+
 /** A completed Gadget response that should be delivered back to the chat gateway. */
 export type GadgetResponse = {
+  /** Legacy text; consumers must use the structured snapshot for shared answers. */
   text: string;
+  /** Optional immutable originating-turn snapshot; absent on legacy deliveries. */
+  structured?: GadgetResponseSnapshot;
 };
 
 /** RPC target provided by the chat gateway for the backend's eventual response. */

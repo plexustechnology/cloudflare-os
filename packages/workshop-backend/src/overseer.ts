@@ -47,7 +47,8 @@ import { AutoApprovalDrainer } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
-import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
+import type { ChatGatewayRpcTarget, GadgetResponseSnapshot, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
+import { snapshotExternalMessageResponse } from "./external-message-response.js";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
@@ -743,8 +744,8 @@ type ExternalMessageRecord = {
   // Namespaced external message key used to dedupe retries of the same submission.
   idempotencyKey: string;
   chatId: number;
-  // Chat log sequence number of the external prompt. The target sends the latest agent/error
-  // response after this sequence, stopping before the next user message.
+  // Chat log sequence number of the external prompt. Snapshot only this turn's final agent text
+  // and persisted pending actions, stopping before a subsequent prompt or callback turn.
   promptSequence: number;
   createdAt: number;
 } & (
@@ -756,6 +757,7 @@ type ExternalMessageRecord = {
       status: "ready";
       chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
       responseText: string;
+      responseSnapshot?: GadgetResponseSnapshot;
     }
   | {
       status: "delivered";
@@ -5480,31 +5482,28 @@ class OverseerImpl implements AgentHooks {
       prefix: `${keyString(chatId)}.`,
       startAfter: `${keyString(chatId)}.${keyString(response.promptSequence)}`,
     })];
-    let nextUserMessageIndex = messagesAfterPrompt.findIndex(
-      message => message.type === "message" && message.author.type === "user",
-    );
-    // Stop at the next user message, which starts a later turn in the same chat.
-    let messagesInSameTurn = nextUserMessageIndex === -1
-      ? messagesAfterPrompt
-      : messagesAfterPrompt.slice(0, nextUserMessageIndex);
-    // Prefer the final agent message or terminal agent error in this turn.
-    for (let message of messagesInSameTurn.toReversed()) {
-      if (
-        (message.type === "error" ||
-          (message.type === "message" && message.author.type === "agent")) &&
-        message.message.trim()
-      ) {
-        this.deliverExternalMessageResponse(response, message.message);
-        return;
-      }
-    }
-    this.deliverExternalMessageResponse(response, "Agent turn completed without a response.");
+    // Exclusion-tainted data may survive in chat/gadget state beyond its original turn. Without
+    // a Teams reader roster, conservatively keep all such workspace responses private.
+    const sharingBlocked = this.storage.prohibitAllSharing.get() ||
+      [...this.storage.actions.list()].some(action => action.type === "observation" &&
+        (action.description.excludeObservers?.length ?? 0) > 0);
+    const snapshot = snapshotExternalMessageResponse(messagesAfterPrompt,
+      id => this.storage.actions.get(id), sharingBlocked,
+      new Set(this.getProposedChanges(chatId).map(change => change.sequence)));
+    const text = snapshot.sharing === "blocked"
+      ? "This response needs to be reviewed privately in Cloudflare OS."
+      : snapshot.text ?? "Agent turn completed without a response.";
+    this.deliverExternalMessageResponse(response, text, snapshot);
   }
 
-  deliverExternalMessageResponse(record: ExternalMessageRecord, text: string): void {
+  deliverExternalMessageResponse(record: ExternalMessageRecord, text: string, snapshot?: GadgetResponseSnapshot): void {
     if (record.status === "delivered") return;
 
-    let readyRecord: ExternalMessageRecord = { ...record, status: "ready", responseText: text };
+    // A ready record is immutable, including legacy records without structured metadata.
+    let readyRecord: ExternalMessageRecord = record.status === "ready" ? record : {
+      ...record, status: "ready", responseText: text,
+      responseSnapshot: snapshot ?? { version: 2, outcome: "failed", actions: [], sharing: "allowed" },
+    };
     this.storage.gadgetResponseDeliveries.put(readyRecord);
     this.#updateExternalMessageResponseDeliveryAlarm();
     this.ctx.waitUntil(this.#deliverExternalMessageResponseToTarget(readyRecord).finally(() => {
@@ -5518,6 +5517,7 @@ class OverseerImpl implements AgentHooks {
     try {
       await record.chatGatewayRpcTarget.onGadgetResponse({
         text: record.responseText,
+        ...(record.responseSnapshot ? { structured: record.responseSnapshot } : {}),
       });
     } catch (err) {
       this.logger.error("failed to deliver external message response", {
@@ -5956,12 +5956,13 @@ class OverseerImpl implements AgentHooks {
       }
       liveChat.activeAgentCallbacks.clear();
 
+      // Freeze the originating external turn before a queued callback starts a later turn.
+      this.#deliverWaitingExternalMessageResponse(chatId);
+
       // If any new messages were queued waiting for the agent to finish, deliver them now.
       if (liveChat.pendingAgentCallbacks.length > 0) {
         this.#startAgentForCallbacks(meta, liveChat);
       } else {
-        this.#deliverWaitingExternalMessageResponse(chatId);
-
         // LiveChatContext is now empty.
         this.#liveChats.delete(chatId);
       }
