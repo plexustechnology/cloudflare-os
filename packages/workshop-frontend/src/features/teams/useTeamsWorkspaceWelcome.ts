@@ -21,7 +21,7 @@ export const useTeamsWorkspaceWelcome = ({
   target?: TeamsOnboardingTarget | null
 }) => {
   const guide = target && workspaceId === target.workspaceId
-    ? workpieces.find(item => item.id === target.gadgetId && item.chatId === undefined && item.commitId !== undefined)
+    ? workpieces.find(item => item.type === 'gadget' && item.id === target.gadgetId && item.chatId === undefined && item.commitId !== undefined)
     : undefined
   const eligible = inTeams && ready && !!guide && chatId === null && gadgetId === null
   const [visit, setVisit] = useState<{ api: RpcStub<AuthenticatedApi>; workspaceId: string;

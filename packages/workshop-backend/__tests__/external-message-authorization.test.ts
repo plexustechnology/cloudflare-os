@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { diffFiles } from "@gadgets/workshop-shared/code-change";
 import type { GadgetResponse } from "@gadgets/workshop-shared/external-message-gateway";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { UserDurableObject } from "../src/user.js";
 
@@ -93,7 +94,7 @@ async function seedPendingCodeChange(impl: ReturnType<typeof Reflect.get>) {
   const commitId = await impl.gitStore.writeFilesAsCommit(files, {
     parents: [], author: { name: "Owner", email: "owner@example.test" }, message: "Initial", timestamp: new Date(0),
   });
-  impl.storage.gadgets.put({ id: 1, title: "App", bindingName: "APP", created: new Date(0), bindings: {}, commitId });
+  impl.storage.gadgets.put({ type: "gadget", id: 1, title: "App", bindingName: "APP", created: new Date(0), bindings: {}, commitId });
   const change = diffFiles(new Map([[1, files]]), new Map([[1, new Map([["app.js", "pending private edit\n"]])]]));
   await impl.submitCodeChange(7, {
     generation: 0, revision: 0, clientId: "controlled", seq: 1, pins: [{ gadgetId: 1, baseCommit: commitId }], change,
@@ -121,7 +122,7 @@ describe("external collaborator observer authorization", () => {
         expect(promptState(impl)).toEqual(before);
         expect(submit).not.toHaveBeenCalled();
         expect(witness.received).toEqual([]);
-        expect(await impl.getGatekeeperFacet(1).verificationAttempts()).toBe(scenario === "revoked verifier" ? 1 : 0);
+        expect(await (await impl.getGatekeeperFacet(1)).verificationAttempts()).toBe(scenario === "revoked verifier" ? 1 : 0);
       });
     },
   );
@@ -163,7 +164,7 @@ describe("external collaborator observer authorization", () => {
       expect(await instance.receiveExternalMessage(input(caller.name, target))).toEqual(expectedDenial);
       expect(promptState(impl)).toEqual(before);
       expect(submit).not.toHaveBeenCalled();
-      expect(await impl.getGatekeeperFacet(1).verificationAttempts()).toBe(1);
+      expect(await (await impl.getGatekeeperFacet(1)).verificationAttempts()).toBe(1);
     });
   });
 });
@@ -192,7 +193,7 @@ describe.each(["existing", "new"] as const)("external commit guard: %s chat", ch
             }); break;
             case "new capability": installGatekeeper(impl, 2); break;
             case "removed capability": impl.storage.gatekeepers.delete(1); break;
-            case "sharing lockdown": impl.storage.prohibitAllSharing.put(true); break;
+            case "sharing lockdown": impl.storage.containsRestrictedData.put(true); break;
           }
           return pending;
         });
@@ -204,7 +205,7 @@ describe.each(["existing", "new"] as const)("external commit guard: %s chat", ch
         expect(promptState(impl)).toEqual(before);
         for (const effect of effects) expect(effect).not.toHaveBeenCalled();
         expect(witness.received).toEqual([]);
-        if (mutation !== "removed capability") expect(await impl.getGatekeeperFacet(1).verificationAttempts()).toBe(2);
+        if (mutation !== "removed capability") expect(await (await impl.getGatekeeperFacet(1)).verificationAttempts()).toBe(2);
       });
     },
   );
@@ -249,10 +250,10 @@ describe("external submission compatibility", () => {
         expect(prompt).toMatchObject({ type: "message", message: privatePrompt, author: callerProfile });
         expect(start).toHaveBeenCalledOnce();
         expect(start.mock.calls[0][1].profile.id).toBe(override ?? "test-model");
-        expect(await impl.getGatekeeperFacet(1).verificationAttempts()).toBe(2);
+        expect(await (await impl.getGatekeeperFacet(1)).verificationAttempts()).toBe(2);
         if (kind === "existing") {
           expect(impl.listLiveChatChanges(7, 0)).toEqual([]);
-          expect(impl.getProposedChanges(7)).toHaveLength(1);
+          expect(impl.proposedChangeWorkpieceIds(7, impl.storage.chatMeta.get(7))).toHaveLength(1);
         }
       } finally {
         registration?.chatGatewayRpcTarget[Symbol.dispose]();
@@ -288,7 +289,7 @@ describe("external submission compatibility", () => {
       try {
         expect((await instance.receiveExternalMessage(input(caller.name, target))).accepted).toBe(true);
         expect(impl.ownerId).toBe(caller.user.id.toString());
-        expect(impl.storage.version.get()).toBe(3);
+        expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
         expect(impl.storage.ownerRegistrationPending.get()).toBe(false);
         expect(observer).not.toHaveBeenCalled();
         expect(await impl.users.getByName(caller.name).getGadget(impl.ctx.id.toString())).not.toBeNull();
@@ -328,7 +329,7 @@ describe("external submission compatibility", () => {
       expect(reserve).toHaveBeenCalledOnce();
       expect(impl.isPreparingChatMessage(7)).toBe(false);
       expect(impl.listLiveChatChanges(7, 0)).toEqual([]);
-      expect(impl.getProposedChanges(7)).toHaveLength(1);
+      expect(impl.proposedChangeWorkpieceIds(7, impl.storage.chatMeta.get(7))).toHaveLength(1);
       expect([...impl.storage.chats.list()].at(-1)).toMatchObject({ type: "message", message: "ordinary browser prompt" });
       expect([...impl.storage.gadgetResponseDeliveries.list()]).toEqual([]);
     });

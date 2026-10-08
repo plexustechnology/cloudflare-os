@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
-import type { ActionRecord } from "../src/overseer.js";
+import type { ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import { snapshotExternalMessageResponse } from "../src/external-message-response.js";
 
 function message(body: AiChatMessageBody, sequence = 1): AiChatMessage {

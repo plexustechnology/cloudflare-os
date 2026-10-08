@@ -21,7 +21,7 @@ import { describe, it } from "node:test";
  *   forwarded — matched by an `env` pattern on this package's task, so it is passed *and*
  *               fingerprinted; changing it is a reported cache miss rather than a stale replay.
  *   uncached  — the task that reads it is `cache: false`, so it runs with the full ambient
- *               environment. Used where `env` would be unsound: `FORMAT_BLUEPRINTS_DIR` names a
+ *               environment. Used where `env` would be unsound: `BUNDLED_BLUEPRINTS_DIR` names a
  *               directory outside the workspace, and `env` fingerprints the value, not the contents.
  *   watch     — read only to build a watch-mode file list. A cached task loads the same module and
  *               sees `undefined`, which is correct: the value decides which paths a long-lived
@@ -29,7 +29,7 @@ import { describe, it } from "node:test";
  *               script run directly, with the full ambient environment. Nothing about the artifact
  *               a cached run produces depends on it.
  *   injected  — set explicitly by the build setup, never inherited. Stripping is correct here:
- *               `build-app.mjs` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
+ *               `build-app.ts` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
  *               task sets `NODE_ENV` before importing Vite.
  *   external  — read outside any vp task (release/dev tooling invoked directly), so vp never
  *               filters it.
@@ -56,15 +56,15 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
-  // `src/worker-inputs.ts` resolves FORMAT_BLUEPRINTS_DIR only to name a directory for the watcher
+  // `src/worker-inputs.ts` resolves BUNDLED_BLUEPRINTS_DIR only to name a directory for the watcher
   // and `forceRerunTriggers`. The `test` task is cached and strips it; `vitest run` never reads
   // those exports, and `pnpm test:watch` is a script, so it keeps the ambient value.
   "packages/integration-tests": {
     injected: ["WORKSHOP_INTEGRATION_PREBUILT"],
-    watch: ["FORMAT_BLUEPRINTS_DIR"],
+    watch: ["BUNDLED_BLUEPRINTS_DIR"],
   },
-  // `env: ['VITE_*']` — vite's `define` inlines any VITE_-prefixed variable, so the set this
-  // package can depend on is open-ended and the wildcard is the only honest declaration.
+  // `cache: { env: ['VITE_*'] }` — vite's `define` inlines any VITE_-prefixed variable, so the set
+  // this package can depend on is open-ended and the wildcard is the only honest declaration.
   "packages/workshop-frontend": {
     forwarded: [
       "VITE_BACKEND_HOST",
@@ -77,13 +77,15 @@ const EXPECTED: Record<string, ExpectedArea> = {
     injected: ["NODE_ENV"],
   },
   "packages/workshop-backend": {
-    uncached: ["FORMAT_BLUEPRINTS_DIR"],
+    uncached: ["BUNDLED_BLUEPRINTS_DIR"],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
   // `build-release.ts`, `run-local.ts` and `preview/` are invoked directly, never as vp tasks.
+  // `TESTS_WITH_TIMEOUT_DISABLE` is `with-timeout.ts`'s off switch. Every cached task that wraps
+  // the watchdog declares it in `env` via `TESTS_WITH_TIMEOUT_ENV`; `vitest-task.test.ts` pins that.
   scripts: {
-    forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
+    forwarded: ["TESTS_WITH_TIMEOUT_DISABLE", "VITE_FRONTEND_ERROR_REPORTING"],
     external: [
       "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
@@ -91,6 +93,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
       "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
       "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
+      // Read by `vp/concurrency.ts` in the wrapper before `vp` starts, never inside a task.
+      "VP_RUN_CONCURRENCY_LIMIT",
     ],
   },
 };
@@ -159,8 +163,9 @@ function readsUnder(directory: string): Set<string> {
 }
 
 // Comments in these files quote the very syntax being searched for — workshop-backend's explains why
-// it is `cache: false` "rather than `env: ['FORMAT_BLUEPRINTS_DIR']`" — so scanning raw source both
-// reads declarations out of prose and lets a deleted one keep passing. Strip comments first.
+// it is `cache: false` "rather than `cache: { env: ['BUNDLED_BLUEPRINTS_DIR'] }`" — so scanning raw
+// source both reads declarations out of prose and lets a deleted one keep passing. Strip comments
+// first.
 const stripComments = (source: string) =>
   source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
 

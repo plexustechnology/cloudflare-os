@@ -1,7 +1,14 @@
-/** In-memory and provider-backed implementations of the gatekeeper cursor RPC. */
+/**
+ * In-memory and provider-backed implementations of the gatekeeper cursor RPC.
+ *
+ * No class here carries `@validateRpc()`: on a server target it validates incoming arguments, and
+ * `next()` takes none. A gatekeeper's capnweb-validate build also transforms only its own sources,
+ * so a decorator here would reach the Worker untransformed and throw.
+ */
 
-import { RpcTarget } from "cloudflare:workers";
-import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
+import { RpcTarget, type RpcStub } from "cloudflare:workers";
+import type { ApprovalQueue, Cursor, GitCache, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import { advertiseCommits, advertisePages, type CommitAdvertisingOptions } from "./git-objects";
 import { SerialTaskQueue } from "./serial-queue";
 import { requirePositiveInt } from "./positive-int";
 
@@ -31,11 +38,43 @@ export class ArrayCursor<T> extends RpcTarget implements Cursor<T> {
   }
 }
 
-type CursorShape = {
+type CursorShape<T> = {
   /** How many items each `next()` returns. */
   pageSize: number;
   /** How many items to ask the provider for at a time. */
   remotePageSize?: number;
+  /**
+   * Releases resources the fetch callback owns — a duplicated RPC stub, most often — when the
+   * cursor is disposed. Without it a fetch callback may only borrow stubs the session owns for at
+   * least as long as the walk: dropping the cursor stub would otherwise leak whatever the callback
+   * duplicated for itself. Return a cursor to exactly one RPC call: capnweb disposes the target
+   * once per stub, so the first drop of a shared cursor would release the walk another still uses.
+   */
+  dispose?(): void;
+  /**
+   * Authorizes what `next()` is about to return, before it leaves the cursor. Runs on every page,
+   * including one served entirely from the buffer with no provider fetch, and once for a walk that
+   * ends having disclosed nothing — a zero-result query answers "no such thing", which is provider
+   * data too.
+   *
+   * A throw holds the outgoing page, so the retry re-offers exactly it, with no further provider
+   * fetch and no chance of a capped page growing between refusal and retry. The exception is an
+   * empty page from a spent window: nothing was disclosed, so the retry opens a fresh window
+   * rather than pinning the walk on a failure that may have been transient.
+   *
+   * That hold is why a walk pinned to a connection must re-check its authority **here**, not only
+   * in its fetch callback: the retry path never re-enters the fetch, so a reconnect landing
+   * between refusal and retry would otherwise disclose the previous connection's rows.
+   *
+   * `terminal` marks the walk over, so `items` is empty and no further page will come. Describe
+   * that case as the query it answered rather than the rows it returned, and give it a
+   * `{ kind: "baseline" }` scope or a synthetic collection id: the gate refuses a `collections`
+   * scope naming none. A mid-walk empty page (a spent fetch window that still says "ask again")
+   * arrives with `terminal: false`.
+   * @param items The page `next()` is about to return; empty when `terminal`.
+   * @param context `terminal` when this ends the walk.
+   */
+  authorizePage(items: readonly T[], context: { terminal: boolean }): Promise<void>;
 };
 
 // Bound sequential requests per `next()`; an empty visibility window returns `[]`, not exhaustion.
@@ -47,22 +86,49 @@ const DEFAULT_REMOTE_PAGE_SIZE = 100;
 const loadMore = Symbol("loadMore");
 
 // Shared buffered implementation for provider-backed cursors.
-abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
+abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
   readonly #pageSize: number;
   readonly #queue = new SerialTaskQueue();
+  readonly #dispose?: () => void;
+  readonly #authorizePage: (items: readonly T[], context: { terminal: boolean }) => Promise<void>;
+  // Set once the walk has either disclosed rows or authorized that it had none. An empty window
+  // leaves it clear: that page answered nothing, so the terminal answer is still owed.
+  #answered = false;
+  #pending?: T[];
+  #disposed = false;
   protected readonly remotePageSize: number;
   protected readonly buffer: T[] = [];
   protected remoteExhausted = false;
 
   /**
    * Creates a buffered provider cursor.
-   * @param options Local and provider page sizes.
+   * @param options Local and provider page sizes, page authorization, and an optional release hook.
    */
-  constructor(options: CursorShape) {
+  constructor(options: CursorShape<T>) {
     super();
-    this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
-    this.remotePageSize =
-      requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
+    this.#dispose = options.dispose;
+    this.#authorizePage = options.authorizePage;
+    // Assigned first, so a rejected page size releases what the caller already acquired for this
+    // cursor -- the documented pattern leases a gate before constructing one.
+    try {
+      this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
+      this.remotePageSize =
+        requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
+    } catch (error) {
+      this[Symbol.dispose]();
+      throw error;
+    }
+  }
+
+  /**
+   * Releases what the fetch callback owns. Idempotent, since the runtime may dispose a target a
+   * second reference already released. A `next()` after disposal is the callback's own business:
+   * whatever it borrowed or released decides what that call does.
+   */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#dispose?.();
   }
 
   /** Loads the next provider page into the buffer. */
@@ -75,20 +141,38 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
 
   /** @returns One local page, `[]` when the fetch window is spent, or `null` at exhaustion. */
   async #fill(): Promise<T[] | null> {
-    let pages = 0;
-    while (this.buffer.length < this.#pageSize
-      && !this.remoteExhausted
-      && pages++ < MAX_PROVIDER_PAGES_PER_CALL) {
-      await this[loadMore]();
+    // A refused page is held, so the retry re-offers exactly it. Refilling instead would grow a
+    // page the provider had capped, changing what the approver already refused. An empty window
+    // is not held: it disclosed nothing, and pinning it would stall the walk on a lost reply.
+    if (!this.#pending?.length) {
+      let pages = 0;
+      while (this.buffer.length < this.#pageSize
+        && !this.remoteExhausted
+        && pages++ < MAX_PROVIDER_PAGES_PER_CALL) {
+        await this[loadMore]();
+      }
+      // Only exhaustion ends the walk. A spent window yields `[]`, which says "ask again".
+      if (this.buffer.length === 0 && this.remoteExhausted) {
+        // A walk that disclosed nothing still answered the query: "no such thing" is provider
+        // data. Authorized once, so a repeated terminal `next()` emits no duplicate observation.
+        if (!this.#answered) {
+          await this.#authorizePage([], { terminal: true });
+          this.#answered = true;
+        }
+        return null;
+      }
+      this.#pending = this.buffer.splice(0, this.#pageSize);
     }
-    // Only exhaustion ends the walk. A spent window yields `[]`, which says "ask again".
-    if (this.buffer.length === 0 && this.remoteExhausted) return null;
-    return this.buffer.splice(0, this.#pageSize);
+    const page = this.#pending;
+    await this.#authorizePage(page, { terminal: false });
+    this.#pending = undefined;
+    if (page.length > 0) this.#answered = true;
+    return page;
   }
 }
 
 /** Options for a provider that pages by page number. */
-export type PageNumberCursorOptions<T> = CursorShape & {
+export type PageNumberCursorOptions<T> = CursorShape<T> & {
   /**
    * Fetches one unfiltered provider page. Filter in `retain`, or a fully hidden page would end the
    * walk.
@@ -106,7 +190,7 @@ export type PageNumberCursorOptions<T> = CursorShape & {
 };
 
 /** Options for a provider that pages by numeric offset. */
-export type OffsetCursorOptions<T> = CursorShape & {
+export type OffsetCursorOptions<T> = CursorShape<T> & {
   /**
    * Fetches one unfiltered provider page. Filter in `retain`, or a fully hidden page would end the
    * walk.
@@ -198,7 +282,7 @@ export type TokenPage<T> = {
 };
 
 /** Options for a provider that pages by continuation token. */
-export type TokenCursorOptions<T> = CursorShape & {
+export type TokenCursorOptions<T> = CursorShape<T> & {
   /**
    * Fetches one provider page.
    * @param token Continuation token from the previous page.
@@ -216,12 +300,25 @@ export type TokenCursorOptions<T> = CursorShape & {
  *
  * @example
  * ```ts
+ * // The cursor is walked after this call returns, so it takes its own lease rather than
+ * // borrowing the session's stub, and releases it when the walk is dropped.
+ * const walk = this.#gate.lease();
  * return new TokenCursor<Project>({
  *   pageSize: 50,
+ *   dispose: () => walk[Symbol.dispose](),
  *   fetchPage: async (token, perPage) => {
  *     const page = await api.listProjects({ cursor: token, limit: perPage });
  *     return { items: page.projects, nextToken: page.nextCursor };
  *   },
+ *   // Branch on emptiness, not on `terminal`: a spent mid-walk window is also empty, and a
+ *   // `collections` scope naming no collection is refused.
+ *   authorizePage: (items, { terminal }) => items.length === 0
+ *     ? walk.authorize(
+ *       { title: "Projects", description: terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible" },
+ *       { kind: "baseline" })
+ *     : walk.authorize(
+ *       { title: "Projects", description: `Read ${items.length} projects` },
+ *       { kind: "collections", ids: items.map(project => project.id) }),
  * });
  * ```
  */
@@ -251,5 +348,120 @@ export class TokenCursor<T> extends BufferedCursor<T> {
     this.remoteExhausted = exhausted;
     this.#token = page.nextToken;
     for (const item of page.items) this.buffer.push(item);
+  }
+}
+
+/** What a `PageHookCursor` runs on each page, and what it releases. */
+export type PageHookCursorOptions<T> = {
+  /**
+   * Runs on each page before `next()` returns it -- e.g. `advertisePages()` from `./git-objects`,
+   * which reports a git listing's commit ids to the workspace before the caller sees them. A
+   * throw rejects that `next()` and holds the page, so the retry re-offers exactly it instead of
+   * skipping it.
+   * @param items The page `next()` is about to return.
+   */
+  beforePage(items: readonly T[]): Promise<void>;
+  /** Releases what the hook owns -- a duplicated RPC stub, most often -- when the cursor is disposed. */
+  dispose?(): void;
+};
+
+/**
+ * Wraps a cursor the gatekeeper already built, so a hook sees each page before the caller does.
+ * For listings whose observation was authorized once, up front: the hook is not an authorization
+ * point (the provider-backed cursors' `authorizePage` is), it only acts on what is about to be
+ * returned.
+ */
+export class PageHookCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
+  readonly #inner: Cursor<T>;
+  readonly #options: PageHookCursorOptions<T>;
+  readonly #queue = new SerialTaskQueue();
+  #held?: T[];
+  #disposed = false;
+
+  /**
+   * Creates the wrapper. It does not take ownership of `inner`.
+   * @param inner The cursor whose pages to return.
+   * @param options The hook, and an optional release hook.
+   */
+  constructor(inner: Cursor<T>, options: PageHookCursorOptions<T>) {
+    super();
+    this.#inner = inner;
+    this.#options = options;
+  }
+
+  /** @returns The next page, or `null` after exhaustion. Concurrent calls are serialized. */
+  next(): Promise<T[] | null> {
+    return this.#queue.run(async () => {
+      const page = this.#held ?? await this.#inner.next();
+      if (page === null) return null;
+      this.#held = page;
+      await this.#options.beforePage(page);
+      this.#held = undefined;
+      return page;
+    });
+  }
+
+  /** Runs the release hook. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#options.dispose?.();
+  }
+}
+
+/**
+ * Lazily obtains and owns a git session's `GitCache` stub (fetched at most once, via its
+ * `ApprovalQueue`), through which the session advertises the commit ids its reads return --
+ * directly, or per page of a listing by wrapping its cursor in a `PageHookCursor` over
+ * `advertisePages()`. Advertisement is workspace-internal pull-routing metadata, not a read, so
+ * no observation accompanies it. A plain helper, deliberately not an `RpcTarget`: the cache stub
+ * must never be reachable by the session's callers.
+ */
+export class SessionGitCache {
+  readonly #approvalQueue: RpcStub<ApprovalQueue>;
+  readonly #options: CommitAdvertisingOptions | undefined;
+  #cache?: Promise<RpcStub<GitCache>>;
+
+  /**
+   * `approvalQueue` is only borrowed; the owning session must outlive this helper. `options` apply
+   * to every advertisement: `withhold` typically names the simulated heads of queued pushes, which
+   * reads show as if pushed but the remote does not have yet.
+   */
+  constructor(approvalQueue: RpcStub<ApprovalQueue>, options?: CommitAdvertisingOptions) {
+    this.#approvalQueue = approvalQueue;
+    this.#options = options;
+  }
+
+  /**
+   * The session-owned cache stub itself, for callers that need more than advertising (the
+   * simulation reads of queued pushes). Borrowed, not transferred: this helper still owns and
+   * disposes it.
+   */
+  stub(): Promise<RpcStub<GitCache>> {
+    this.#cache ??= this.#approvalQueue.getGitCache();
+    return this.#cache;
+  }
+
+  /** Advertise the given commit ids; values that aren't full commit ids are skipped. */
+  async advertise(ids: Iterable<GitOid>): Promise<void> {
+    await advertiseCommits(await this.stub(), ids, this.#options);
+  }
+
+  /**
+   * Wrap a cursor so that each page it returns advertises its commit ids first. The wrapper holds
+   * its own dup of the cache stub, so it keeps working if the session is disposed before the
+   * cursor is drained.
+   */
+  async wrap<T>(cursor: Cursor<T>, commitIds: (item: T) => readonly GitOid[]): Promise<Cursor<T>> {
+    const cache = (await this.stub()).dup();
+    return new PageHookCursor(cursor, {
+      beforePage: advertisePages(cache, commitIds, this.#options),
+      dispose: () => cache[Symbol.dispose](),
+    });
+  }
+
+  /** Releases the cache stub, if one was fetched. */
+  dispose(): void {
+    void this.#cache?.then(cache => cache[Symbol.dispose]()).catch(() => {});
   }
 }

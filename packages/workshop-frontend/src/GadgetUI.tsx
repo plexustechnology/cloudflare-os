@@ -127,6 +127,9 @@ interface GadgetUIProps {
   onIframeEscape?: () => void
   // Presentation only: module evaluation and the authorized gadget RPC connection both succeeded.
   onReady?: () => void
+  // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
+  // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
+  onNoUiChange?: (showsNoUi: boolean) => void
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -138,7 +141,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onReady }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onReady }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -178,6 +181,17 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const onConsoleLogRef = useRef(onConsoleLog)
   onIframeEscapeRef.current = onIframeEscape
   onConsoleLogRef.current = onConsoleLog
+  const onNoUiChangeRef = useRef(onNoUiChange)
+  onNoUiChangeRef.current = onNoUiChange
+
+  // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
+  // result must not keep counting while the replacement load is pending.
+  const showsNoUi = hasLoaded && !isInvalidated && !loading && !error && !sandboxedHtml
+  useEffect(() => {
+    if (!showsNoUi) return
+    onNoUiChangeRef.current?.(true)
+    return () => onNoUiChangeRef.current?.(false)
+  }, [showsNoUi])
 
   const suspendGadgetCalls = () => {
     if (!pendingGadgetStubRef.current) {

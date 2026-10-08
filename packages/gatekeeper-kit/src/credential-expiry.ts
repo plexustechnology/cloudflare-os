@@ -1,6 +1,6 @@
 /** Durable, deduplicated Workshop notification for expired credentials. */
 
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { generateNonce } from "./connect-nonce";
 import type { KvReadWrite } from "./kv";
@@ -96,7 +96,9 @@ async function notify(
 }
 
 /**
- * Re-arms the credential-expiry latch. Both writes must stay adjacent and awaitless so the arm and
+ * Re-arms the credential-expiry latch. For a hand-written account only: `CredentialCoordinator`
+ * calls this from its own commit, so every credential replacement it makes — connect, refresh,
+ * rejection heal — re-arms already. Both writes must stay adjacent and awaitless so the arm and
  * latch commit together.
  * @param kv Stable Durable Object expiry-latch storage.
  */

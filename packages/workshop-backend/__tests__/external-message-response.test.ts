@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
 import { snapshotExternalMessageResponse } from "../src/external-message-response.js";
-import type { ActionRecord } from "../src/overseer.js";
+import type { ActionRecord } from "../src/storage-schema/overseer-storage.js";
 
 const message = (body: AiChatMessageBody, sequence = 1): AiChatMessage => ({
   chatId: 7, sequence, timestamp: new Date(), author: { type: "agent", name: "Agent" }, ...body,

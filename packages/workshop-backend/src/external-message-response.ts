@@ -1,7 +1,7 @@
 import type { AiChatMessage } from "@gadgets/workshop-shared/api";
 import { changedGadgets } from "@gadgets/workshop-shared/code-change";
 import type { GadgetResponseSnapshot, GadgetResponseAction } from "@gadgets/workshop-shared/external-message-gateway";
-import type { ActionRecord } from "./overseer.js";
+import type { ActionRecord } from "./storage-schema/overseer-storage.js";
 
 /** Selects one originating turn using persisted chat state, without interpreting model prose. */
 export function snapshotExternalMessageResponse(
