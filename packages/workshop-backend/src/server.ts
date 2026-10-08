@@ -157,6 +157,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   completeOnboarding(): Promise<void> {
     return this.#user.completeOnboarding();
   }
+  hasSeenWorkspaceWelcome(workspaceId: string): Promise<boolean> {
+    return retryOnDoReset(() => this.#user.hasSeenWorkspaceWelcome(workspaceId));
+  }
+  markWorkspaceWelcomeSeen(workspaceId: string): Promise<void> {
+    return this.#user.markWorkspaceWelcomeSeen(workspaceId);
+  }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
     return getUsageInfo(this.env, this.#user);

@@ -163,6 +163,9 @@ function makeUserStorage(storage: DurableObjectStorage) {
       gadgets: collection<GadgetRecord>()({
         primaryKey: "id"
       }),
+      workspaceWelcomes: collection<{ workspaceId: string }>()({
+        primaryKey: "workspaceId",
+      }),
       connectedAccounts: collection<ConnectedAccountRecord>()({
         primaryKey: "id"
       }),
@@ -606,6 +609,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async completeOnboarding(): Promise<void> {
     this.storage.onboardingCompleted.put(true);
+  }
+
+  /** Reads this account's durable welcome preference without granting resource access. */
+  async hasSeenWorkspaceWelcome(workspaceId: string): Promise<boolean> {
+    if (!/^[0-9a-f]{64}$/.test(workspaceId)) throw new Error("Invalid workspace identity.");
+    return this.storage.workspaceWelcomes.get(workspaceId) !== undefined;
+  }
+
+  /** Only registered workspaces may create preferences; opening them still requires authorization. */
+  async markWorkspaceWelcomeSeen(workspaceId: string): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(workspaceId) || !this.storage.gadgets.get(workspaceId)) {
+      throw new Error("Unknown workspace.");
+    }
+    this.storage.workspaceWelcomes.put({ workspaceId });
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "exports": {
+    "./teams-onboarding": {
+      "types": "./src/teams-onboarding.ts",
+      "import": "./src/teams-onboarding.ts"
+    },
     "./api": {
       "types": "./src/api.ts",
       "import": "./src/api.ts"

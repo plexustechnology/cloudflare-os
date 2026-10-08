@@ -427,6 +427,12 @@ export interface AuthenticatedApi extends RpcTarget {
   /** Mark the onboarding wizard as completed. */
   completeOnboarding(): Promise<void>;
 
+  /** Whether this account has successfully opened the welcome guide in this workspace. */
+  hasSeenWorkspaceWelcome(workspaceId: string): Promise<boolean>;
+
+  /** Records a presentation preference for this account only; grants no workspace access. */
+  markWorkspaceWelcomeSeen(workspaceId: string): Promise<void>;
+
   // --- Optional Cloudflare limits / top-up flow (only meaningful when enabled server-side) ---
 
   /** Get the user's current free-tier usage and connected-account balance. */
