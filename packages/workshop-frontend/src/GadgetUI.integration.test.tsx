@@ -176,6 +176,84 @@ describe('GadgetUI RPC recovery', () => {
     return child
   }
 
+  it('reports readiness only after module completion from the current frame and an authorized RPC connection', async () => {
+    const gadget = fakeGadget('guide', 'document.body.textContent = "guide"')
+    const onReady = vi.fn<() => void>()
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" onReady={onReady} />))
+    const iframe = container.querySelector('iframe')!
+    await act(async () => connectIframe(iframe))
+    expect(onReady).not.toHaveBeenCalled()
+    await act(async () => window.dispatchEvent(new MessageEvent('message', { data: 'gadget-ui-ready', origin: 'null', source: window })))
+    expect(onReady).not.toHaveBeenCalled()
+    await act(async () => window.dispatchEvent(new MessageEvent('message', { data: 'gadget-ui-ready', origin: 'null', source: iframe.contentWindow })))
+    expect(onReady).toHaveBeenCalledOnce()
+  })
+
+  it('does not report a ready signal when the gadget connection fails', async () => {
+    const connection = deferred<RpcStub<TestGadget>>()
+    const gadget = fakeGadget('guide', 'document.body.textContent = "guide"', vi.fn(() => connection.promise))
+    const onReady = vi.fn<() => void>()
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" onReady={onReady} />))
+    const iframe = container.querySelector('iframe')!
+    dispatchIframeHandshake(iframe, new MessageChannel().port2)
+    await act(async () => window.dispatchEvent(new MessageEvent('message', { data: 'gadget-ui-ready', origin: 'null', source: iframe.contentWindow })))
+    expect(onReady).not.toHaveBeenCalled()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await act(async () => connection.reject(new Error('Denied')))
+    expect(onReady).not.toHaveBeenCalled()
+    error.mockRestore()
+  })
+
+  it('waits for a successfully loaded guide to become visible before reporting readiness', async () => {
+    const gadget = fakeGadget('guide', 'document.body.textContent = "guide"')
+    const onReady = vi.fn<() => void>()
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" onReady={onReady} />))
+    const iframe = container.querySelector('iframe')!
+    await act(async () => connectIframe(iframe))
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" isVisible={false} onReady={onReady} />))
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      data: 'gadget-ui-ready', origin: 'null', source: iframe.contentWindow,
+    })))
+    expect(onReady).not.toHaveBeenCalled()
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" isVisible onReady={onReady} />))
+    expect(onReady).toHaveBeenCalledOnce()
+  })
+
+  it('does not consume a replacement account welcome until its gadget connection succeeds', async () => {
+    const first = fakeGadget('first', 'document.body.textContent = "guide"')
+    await act(async () => root.render(<GadgetUI gadget={first.stub} height="100px" />))
+    const iframe = container.querySelector('iframe')!
+    await act(async () => connectIframe(iframe))
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      data: 'gadget-ui-ready', origin: 'null', source: iframe.contentWindow,
+    })))
+    const connection = deferred<RpcStub<TestGadget>>()
+    const second = fakeGadget('second', 'document.body.textContent = "guide"', vi.fn(() => connection.promise))
+    const onReady = vi.fn<() => void>()
+    await act(async () => root.render(<GadgetUI gadget={second.stub} height="100px" onReady={onReady} />))
+    expect(container.querySelector('iframe')).toBe(iframe)
+    expect(onReady).not.toHaveBeenCalled()
+    await act(async () => connection.resolve(new RpcStub(new TestGadgetTarget('second')) as unknown as RpcStub<TestGadget>))
+    expect(onReady).toHaveBeenCalledOnce()
+  })
+
+  it('withholds readiness when the current module fails before its RPC connection succeeds', async () => {
+    const connection = deferred<RpcStub<TestGadget>>()
+    const gadget = fakeGadget('guide', 'document.body.textContent = "guide"', vi.fn(() => connection.promise))
+    const onReady = vi.fn<() => void>()
+    await act(async () => root.render(<GadgetUI gadget={gadget.stub} height="100px" onReady={onReady} />))
+    const iframe = container.querySelector('iframe')!
+    await act(async () => connectIframe(iframe))
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: 'gadget-ui-ready', origin: 'null', source: iframe.contentWindow }))
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'console', level: 'error', message: ['Synthetic module failure'] }, origin: 'null', source: iframe.contentWindow,
+      }))
+      connection.resolve(new RpcStub(new TestGadgetTarget('guide')) as unknown as RpcStub<TestGadget>)
+    })
+    expect(onReady).not.toHaveBeenCalled()
+  })
+
   it('lays out gadget UI against the device-width viewport', async () => {
     const gadget = fakeGadget('responsive', 'document.body.textContent = "responsive"')
     await act(async () => {

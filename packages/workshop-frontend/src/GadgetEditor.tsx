@@ -16,6 +16,8 @@ import {
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { useAuthenticatedApi } from './AuthContext'
+import { useTeamsHost } from './features/teams/TeamsHostGate'
+import { useTeamsWorkspaceWelcome } from './features/teams/useTeamsWorkspaceWelcome'
 import { useConnectionLost } from './RpcContext'
 import UserMenu from './components/UserMenu'
 import SiteLogo from './components/SiteLogo'
@@ -443,6 +445,7 @@ export default function GadgetEditor() {
   // subscribeToWorkpieces(). `workpiecesReady` flips once the initial listing has arrived.
   const [workpieces, setWorkpieces] = useState<Map<WorkpieceId, WorkpieceSummary>>(new Map())
   const [workpiecesReady, setWorkpiecesReady] = useState(false)
+  const [workpiecesSource, setWorkpiecesSource] = useState<typeof overseer>(null)
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
@@ -686,10 +689,17 @@ export default function GadgetEditor() {
 
   // The selected gadget: explicit URL state wins, followed by the app open in this session (only
   // accepted apps are persisted), then the workspace default and the first visible gadget.
+  const teamsHost = useTeamsHost()
+  const welcome = useTeamsWorkspaceWelcome({ api: authenticatedApi, workspaceId: id,
+    inTeams: teamsHost !== null, ready: !!metadata && overseer?.api === authenticatedApi &&
+      workpiecesReady && workpiecesSource === overseer,
+    workpieces: allGadgets, chatId: urlChatId, gadgetId: urlWorkpieceId,
+    onOpen: () => setActiveTab('app') })
   const selectedGadgetId = useMemo(() => {
     if (urlWorkpieceId !== null && visibleGadgets.some(g => g.id === urlWorkpieceId)) {
       return urlWorkpieceId
     }
+    if (welcome.gadgetId !== null) return welcome.gadgetId
     const storedId = workspaceView?.mode === 'app' ? workspaceView.appId : undefined
     if (storedId !== undefined && visibleGadgets.some(g => g.id === storedId)) {
       return storedId
@@ -699,7 +709,7 @@ export default function GadgetEditor() {
       return defaultId
     }
     return visibleGadgets.length > 0 ? visibleGadgets[0].id : null
-  }, [urlWorkpieceId, workspaceView, visibleGadgets, metadata?.defaultGadgetId])
+  }, [urlWorkpieceId, workspaceView, visibleGadgets, metadata?.defaultGadgetId, welcome.gadgetId])
 
   const selectedGadgetSummary = selectedGadgetId !== null
     ? visibleGadgets.find(g => g.id === selectedGadgetId)
@@ -806,9 +816,9 @@ export default function GadgetEditor() {
   const simpleMode = layoutModeReady && !hasCodeRelatedState && !hasCommittedCode
     && singleInitialChat && visibleGadgets.length <= 1
   const hasAnyApps = allGadgets.length > 0
-  const showingActivity = workspaceView?.mode === 'activity'
+  const showingActivity = welcome.gadgetId === null && workspaceView?.mode === 'activity'
   const showFullEditor = layoutModeReady && (
-    showingActivity || (hasAnyApps && (workspaceView === null ? !simpleMode : workspaceView.mode === 'app'))
+    welcome.gadgetId !== null || showingActivity || (hasAnyApps && (workspaceView === null ? !simpleMode : workspaceView.mode === 'app'))
   )
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
@@ -823,7 +833,7 @@ export default function GadgetEditor() {
     : ''
 
   const previewChatId =
-    selectedChatHasProposedChanges && effectiveSelectedChatId !== null
+    welcome.gadgetId === null && selectedChatHasProposedChanges && effectiveSelectedChatId !== null
       ? effectiveSelectedChatId
       : undefined
 
@@ -875,6 +885,7 @@ export default function GadgetEditor() {
   }, [])
 
   const setWorkspaceVisibility = useCallback((visibility: 'open' | 'closed', appId?: WorkpieceId) => {
+    welcome.cancel()
     setWorkspaceTransitionEnabled(true)
     setActivityClosing(false)
     activityReturnViewRef.current = null
@@ -887,7 +898,7 @@ export default function GadgetEditor() {
       // and when the app is accepted.
       setWorkspaceView({ mode: 'app', appId })
     }
-  }, [id])
+  }, [id, welcome.cancel])
 
   // Arriving with ?w= (from the Outputs page, say) has to show that workpiece, not whichever view
   // this workspace was last left on -- selectedGadgetId already honours the parameter, but the
@@ -905,12 +916,13 @@ export default function GadgetEditor() {
   }, [workpiecesReady, urlWorkpieceId, visibleGadgets, setWorkspaceVisibility])
 
   const openActivity = useCallback((initialView: ActivityView) => {
+    welcome.cancel()
     setWorkspaceTransitionEnabled(true)
     setActivityClosing(false)
     if (workspaceView?.mode !== 'activity') activityReturnViewRef.current = workspaceView
     setActivityView(initialView)
     setWorkspaceView({ mode: 'activity' })
-  }, [workspaceView])
+  }, [workspaceView, welcome.cancel])
 
   const closeWorkspacePane = useCallback(() => {
     if (workspaceView?.mode !== 'activity') {
@@ -1012,10 +1024,11 @@ export default function GadgetEditor() {
   }, [])
 
   const handleTabSelect = useCallback((tab: RightTab) => {
+    welcome.cancel()
     let output = turnOutputRef.current
     if (output?.chatId === selectedChatIdRef.current) output.userSelectedTab = true
     setActiveTab(tab)
-  }, [])
+  }, [welcome.cancel])
 
   useEffect(() => {
     setChatChanges(undefined)
@@ -1041,6 +1054,7 @@ export default function GadgetEditor() {
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(
     (chatId: number | null, options?: { replace?: boolean }) => {
+      welcome.cancel()
       setUserNavigatedToList(chatId === null)
       // Draft apps can only be previewed from their creating conversation.
       const pendingChatId = selectedGadgetSummary?.chatId
@@ -1067,7 +1081,7 @@ export default function GadgetEditor() {
         replace: options?.replace,
       })
     },
-    [id, navigate, selectedGadgetSummary?.chatId, workspaceView?.mode]
+    [id, navigate, selectedGadgetSummary?.chatId, workspaceView?.mode, welcome.cancel]
   )
 
   // ── keep single-chat routing aligned with the current mode ──────────────────
@@ -1146,6 +1160,7 @@ export default function GadgetEditor() {
       initial => {
         setWorkpieces(initial)
         setWorkpiecesReady(true)
+        setWorkpiecesSource(overseer)
       },
     )
     overseer.stub
@@ -1366,6 +1381,7 @@ export default function GadgetEditor() {
         metadata={metadata}
         authenticatedApi={authenticatedApi}
         currentUserId={userInfo?.id ?? null}
+        onReady={welcome.gadgetId !== null ? welcome.onReady : undefined}
       />
     )
   }
@@ -1850,6 +1866,7 @@ export default function GadgetEditor() {
                   isVisible={activeTab === 'app' && !previewMode}
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
+                  onReady={welcome.gadgetId !== null ? welcome.onReady : undefined}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                 />
               ) : !previewMode && (

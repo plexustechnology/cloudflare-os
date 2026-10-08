@@ -43,7 +43,7 @@ export function useWorkspaceOpen({
   onShareKeyConsumed,
   onInvalidShareKey,
 }: Options) {
-  const [overseer, setOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
+  const [overseer, setOverseer] = useState<{ stub: RpcStub<Overseer>; api: RpcStub<AuthenticatedApi> } | null>(null)
   const [metadata, setMetadata] = useState<GadgetMetadata | null>(null)
   const [error, setError] = useState<WorkspaceLoadError | null>(null)
   const [connectionLost, setConnectionLost] = useState(false)
@@ -118,7 +118,7 @@ export function useWorkspaceOpen({
 
         overseerStub = authenticatedApi.openGadget(id, shareKey, configureObservers)
         linkActionLog(overseerStub, id)
-        setOverseer({ stub: overseerStub })
+        setOverseer({ stub: overseerStub, api: authenticatedApi })
 
         const resolvedSubscription = await overseerStub.subscribeToMetadata((nextMetadata) => {
           if (cancelled) return

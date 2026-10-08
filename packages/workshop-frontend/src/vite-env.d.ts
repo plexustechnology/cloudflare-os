@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  // Optional deployment-owned Teams welcome gadget. It does not confer workspace access.
+  readonly VITE_TEAMS_ONBOARDING_TARGET?: string;
   // Override the local backend host used by Vite dev, e.g. "localhost:9000".
   readonly VITE_BACKEND_HOST?: string;
 

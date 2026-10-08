@@ -110,7 +110,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode + '\n;window.parent.postMessage("gadget-ui-ready", "*");')}"></script>
 </body>
 </html>`.trim()
 }
@@ -125,6 +125,8 @@ interface GadgetUIProps {
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
   onIframeEscape?: () => void
+  // Presentation only: module evaluation and the authorized gadget RPC connection both succeeded.
+  onReady?: () => void
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -136,7 +138,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onReady }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -161,6 +163,16 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reject: (reason: unknown) => void
   } | null>(null)
   const rpcSessionRef = useRef<any>(null)
+  const connectedGadgetRef = useRef<RpcStub<GadgetClient> | null>(null)
+  const uiEvaluatedRef = useRef(false)
+  const onReadyRef = useRef(onReady)
+  const visibleRef = useRef(isVisible)
+  onReadyRef.current = onReady
+  visibleRef.current = isVisible
+  const notifyReady = () => {
+    if (uiEvaluatedRef.current && rpcSessionRef.current && visibleRef.current &&
+        connectedGadgetRef.current === gadgetRef.current) onReadyRef.current?.()
+  }
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
   const onIframeEscapeRef = useRef(onIframeEscape)
   const onConsoleLogRef = useRef(onConsoleLog)
@@ -181,7 +193,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     return pendingGadgetStubRef.current
   }
 
-  const installGadgetStub = (stub: any) => {
+  const installGadgetStub = (stub: any, owner: RpcStub<GadgetClient>) => {
+    connectedGadgetRef.current = owner
     gadgetStubRef.current = stub
     stub.onRpcBroken?.(() => {
       if (gadgetStubRef.current === stub) suspendGadgetCalls()
@@ -195,11 +208,13 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     pendingGadgetStubRef.current = null
     gadgetStubRef.current?.[Symbol.dispose]?.()
     gadgetStubRef.current = null
+    connectedGadgetRef.current = null
     rpcSessionRef.current?.[Symbol.dispose]?.()
     rpcSessionRef.current = null
   }
 
   const reloadIframe = (reason: unknown) => {
+    uiEvaluatedRef.current = false
     resetConnection(reason)
     setIframeGeneration(generation => generation + 1)
   }
@@ -231,10 +246,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         ])
         if (!isCurrent()) return
         const oldStub = gadgetStubRef.current
-        installGadgetStub(replacementStub)
+        installGadgetStub(replacementStub, gadget)
         pendingStub.resolve(replacementStub)
         if (pendingGadgetStubRef.current === pendingStub) pendingGadgetStubRef.current = null
         oldStub?.[Symbol.dispose]?.()
+        notifyReady()
       } catch (caught) {
         if (isCurrent()) reloadIframe(caught)
       } finally {
@@ -294,6 +310,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
+          uiEvaluatedRef.current = false
           const html = createSandboxedHtml(bundle.jsCode)
           setSandboxedHtml(html)
         } else {
@@ -348,13 +365,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           event.source === iframeRef.current?.contentWindow
         try {
           // Open the RPC connection to the gadget's server side
-          gadgetStub = await gadgetRef.current.connectToGadget(chatId)
+          const owner = gadgetRef.current
+          gadgetStub = await owner.connectToGadget(chatId)
           if (!isCurrent()) {
             gadgetStub[Symbol.dispose]?.()
             port.close()
             return
           }
-          installGadgetStub(gadgetStub)
+          installGadgetStub(gadgetStub, owner)
           // Redirectable target: swapping gadgetStubRef reconnects top-level calls without reloading.
           const forwardingTarget = new Proxy(new RpcTarget() as any, {
             get: (target, property, receiver) => {
@@ -368,6 +386,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
             },
           })
           rpcSessionRef.current = newMessagePortRpcSession(port, forwardingTarget)
+          notifyReady()
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()
@@ -377,8 +396,12 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
-      } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
-        onConsoleLogRef.current({
+      } else if (event.data === 'gadget-ui-ready') {
+        uiEvaluatedRef.current = true
+        notifyReady()
+      } else if (event.data?.type === 'console') {
+        if (event.data.level === 'error') uiEvaluatedRef.current = false
+        onConsoleLogRef.current?.({
           timestamp: new Date(),
           level: event.data.level,
           message: event.data.message,
@@ -395,6 +418,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  useEffect(() => {
+    notifyReady()
+  }, [onReady, isVisible])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
