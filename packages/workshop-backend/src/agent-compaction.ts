@@ -28,6 +28,11 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
+  if (config.provider === "deployment-openai-compatible") return {
+    // References are minted by the deployment catalog; transport revalidates current env limits.
+    inputBudget: (config.contextWindow ?? 65536) - (config.outputLimit ?? 4096),
+    maxOutputTokens: config.outputLimit ?? 4096,
+  };
   let maxOutputTokens = model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
   return {

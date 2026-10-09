@@ -1143,7 +1143,7 @@ export type CloudflareAccountOption = {
 };
 
 /** Supported AI providers. */
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "azure-foundry" | "ollama";
+export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "azure-foundry" | "ollama" | "deployment-openai-compatible";
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
@@ -1176,6 +1176,12 @@ export type AiModelConfig = {
    * alternative provider that provides a compatible API.
    */
   apiUrl?: string;
+
+  /** Server-resolved context window for deployment-openai-compatible; ignored by other providers. */
+  contextWindow?: number;
+
+  /** Server-resolved response reservation for deployment-openai-compatible; ignored by other providers. */
+  outputLimit?: number;
 };
 
 /**
@@ -1230,6 +1236,7 @@ export const SUGGESTED_MODELS: Record<
   },
   "ollama": {
   },
+  "deployment-openai-compatible": {},
 };
 
 /**

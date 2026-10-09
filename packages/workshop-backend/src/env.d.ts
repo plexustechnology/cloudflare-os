@@ -24,6 +24,12 @@ declare global {
       AZURE_FOUNDRY_ENDPOINT?: string;
       AZURE_FOUNDRY_MODEL?: string;
       AZURE_FOUNDRY_API_KEY?: string;
+      // Optional fixed deployment endpoint. Credentials are backend-only secret bindings.
+      OPENAI_COMPATIBLE_CONFIG?: string;
+      OPENAI_COMPATIBLE_API_KEY?: string;
+      OPENAI_COMPATIBLE_ACCESS_CLIENT_ID?: string;
+      OPENAI_COMPATIBLE_ACCESS_CLIENT_SECRET?: string;
+      OPENAI_COMPATIBLE_VPC_SERVICE?: Pick<Fetcher, "fetch">;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.
 

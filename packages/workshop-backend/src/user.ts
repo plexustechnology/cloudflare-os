@@ -551,6 +551,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+    if (config.provider === "deployment-openai-compatible" || profile.id.startsWith("deployment-openai-compatible/")) {
+      throw new Error("Deployment OpenAI-compatible models are configured by the operator.");
+    }
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig && config.provider !== "azure-foundry" && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
@@ -563,6 +566,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async deleteModel(id: string): Promise<void> {
     // In AI Gateway mode, don't allow deleting built-in suggested models.
     let gwConfig = getAiGatewayConfig(this.env);
+    if (id.startsWith("deployment-openai-compatible/")) throw new Error("Cannot delete a deployment model.");
     if (gwConfig) {
       for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
         if ((gwConfig.providers.has(provider) || provider === "azure-foundry" && gwConfig.azureFoundry) && id in models) {
@@ -721,14 +725,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (gwConfig) {
         result.aiModel = gwConfig.resolveModel(modelId);
       }
-      if (!result.aiModel) {
+      if (!result.aiModel && !modelId.startsWith("deployment-openai-compatible/")) {
         result.aiModel = this.storage.aiModels.get(modelId);
       }
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
     }
 
     // Resolve the quick model (used for lightweight tasks like title generation).
-    if (gwConfig) {
+    if (result.aiModel?.config.provider === "deployment-openai-compatible") {
+      result.quickModel = result.aiModel.config;
+    } else if (gwConfig) {
       // In AI Gateway mode, always use the hardcoded quick model.
       result.quickModel = gwConfig.getQuickModelConfig();
     } else {
@@ -754,6 +760,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       return context;
     }
     let models = await this.listModels();
+    const selectedDeploymentId = existingChatModelId?.startsWith("deployment-openai-compatible/")
+      ? existingChatModelId : this.storage.preferredModel.get();
+    if (selectedDeploymentId?.startsWith("deployment-openai-compatible/") &&
+        !models.some(model => model.id === selectedDeploymentId)) {
+      throw new Error("Selected deployment OpenAI-compatible model is unavailable.");
+    }
     // Prefer the existing chat's model, then the user's preferred model, then the first available model.
     let selectedModel = models.find(model => model.id === existingChatModelId)
       ?? models.find(model => model.id === this.storage.preferredModel.get())

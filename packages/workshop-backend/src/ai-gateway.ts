@@ -1,5 +1,6 @@
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
 import { UserAiModelRecord } from "./user.js";
+import { deploymentOpenAiModelConfig, readDeploymentOpenAiConfig, type DeploymentOpenAiConfig } from "./deployment-openai.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
 //
@@ -48,8 +49,10 @@ export class AiGatewayConfig {
   readonly binding?: Ai;
   readonly providers: Set<string>;
   readonly azureFoundry?: { endpoint: string; model: string; apiKey: string };
+  readonly deploymentOpenAi?: DeploymentOpenAiConfig;
 
   constructor(env: Cloudflare.Env) {
+    this.deploymentOpenAi = readDeploymentOpenAiConfig(env);
     this.gateway = env.CF_AI_GATEWAY!;
     if (!env.CF_AI_GATEWAY_ACCOUNT_ID) {
       throw new Error("CF_AI_GATEWAY_ACCOUNT_ID is required when CF_AI_GATEWAY is set.");
@@ -119,6 +122,7 @@ export class AiGatewayConfig {
         }
       }
     }
+    if (this.deploymentOpenAi) result.push({ type: "agent", id: `deployment-openai-compatible/${this.deploymentOpenAi.model}`, name: this.deploymentOpenAi.name });
     return result;
   }
 
@@ -127,6 +131,10 @@ export class AiGatewayConfig {
    * SUGGESTED_MODEL for an enabled gateway provider, or undefined otherwise.
    */
   resolveModel(modelId: string): UserAiModelRecord | undefined {
+    if (this.deploymentOpenAi && `deployment-openai-compatible/${this.deploymentOpenAi.model}` === modelId) return {
+      profile: { type: "agent", id: modelId, name: this.deploymentOpenAi.name },
+      config: deploymentOpenAiModelConfig(this.deploymentOpenAi),
+    };
     for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
       if (this.providerEnabled(provider) && modelId in models) {
         const azure = provider === "azure-foundry" ? this.azureFoundry : undefined;
