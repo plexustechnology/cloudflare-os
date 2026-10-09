@@ -240,9 +240,13 @@ describe("deployment-owned OpenAI-compatible inference", () => {
       expect(chatContext.quickModel).toEqual(chatContext.aiModel?.config);
       await expect(instance.addModel({ type: "agent", id, name: "Synthetic collision" }, { provider: "openai", model: "synthetic", apiToken: "" })).rejects.toThrow("operator");
       await expect(instance.addModel({ type: "agent", id: "another", name: "Synthetic" }, reference)).rejects.toThrow("operator");
+      await instance.setPreferredModel(id);
       Reflect.get(instance, "env").OPENAI_COMPATIBLE_CONFIG = undefined;
       await expect(instance.getChatContext(id)).rejects.toThrow("No such model");
       await expect(instance.getExternalMessageChatContext(id)).rejects.toThrow("unavailable");
+      await expect(instance.getExternalMessageChatContext(null)).rejects.toThrow("unavailable");
+      // A disabled preference must not replace an existing, explicitly selected Azure chat.
+      expect((await instance.getExternalMessageChatContext(azureModel)).aiModel?.config.provider).toBe("azure-foundry");
       expect((await instance.getExternalMessageChatContext(null, id)).aiModel).toBeUndefined();
       expect((await instance.getExternalMessageChatContext(null, azureModel)).aiModel?.config.provider).toBe("azure-foundry");
     });

@@ -760,7 +760,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       return context;
     }
     let models = await this.listModels();
-    const selectedDeploymentId = existingChatModelId?.startsWith("deployment-openai-compatible/")
+    const selectedDeploymentId = existingChatModelId?.startsWith("deployment-openai-compatible/") ||
+        models.some(model => model.id === existingChatModelId)
       ? existingChatModelId : this.storage.preferredModel.get();
     if (selectedDeploymentId?.startsWith("deployment-openai-compatible/") &&
         !models.some(model => model.id === selectedDeploymentId)) {
