@@ -4,7 +4,8 @@ An optional `OPENAI_COMPATIBLE_CONFIG` JSON variable configures one fixed text-o
 existing Workshop backend. It is available in the deployment-funded AI Gateway catalog, alongside
 other configured providers, but inference bypasses AI Gateway billing. The descriptor contains
 `model`, `name`, canonical `/v1` `baseUrl`, `transport` (`vpc-service` or `https`), `contextWindow`,
-`outputLimit`, `timeoutMs` and `maxConcurrent`. No endpoint, model, service or credential is built in.
+`outputLimit`, `timeoutMs` (≤ 300,000), `maxConcurrent` and optional `reasoningEffort` (`low`, `medium`,
+`high`; sent as the deployment-owned `reasoning_effort`, never caller-controlled). No endpoint, model, service or credential is built in.
 
 Supply `OPENAI_COMPATIBLE_API_KEY` as a backend secret. A `vpc-service` route also requires
 `OPENAI_COMPATIBLE_VPC_SERVICE`, a fixed VPC Service fetch binding; never bind an entire network.

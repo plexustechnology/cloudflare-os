@@ -13,8 +13,10 @@ const schema = z.object({
   transport: z.enum(["vpc-service", "https"]),
   contextWindow: z.number().int().min(2048).max(1_048_576),
   outputLimit: z.number().int().min(1).max(8192),
-  timeoutMs: z.number().int().min(1000).max(120_000),
+  timeoutMs: z.number().int().min(1000).max(300_000),
   maxConcurrent: z.number().int().min(1).max(4),
+  // Optional server-side reasoning budget for reasoning models (vLLM `reasoning_effort`).
+  reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
 }).strict().refine(c => c.outputLimit + 1024 < c.contextWindow);
 
 /** Non-secret, deployment-owned descriptor for one private Chat Completions endpoint. */
@@ -161,9 +163,13 @@ export function getDeploymentOpenAiModel(env: Cloudflare.Env, config: AiModelCon
         if (payload.model !== deployment.model || payload.stream !== true || payload.max_tokens !== maxTokens) {
           throw new Error("Deployment OpenAI-compatible request parameters denied.");
         }
+        // Deployment-owned reasoning budget; never caller-controlled.
+        delete payload.reasoning_effort;
+        if (deployment.reasoningEffort) payload.reasoning_effort = deployment.reasoningEffort;
+        const outgoingBody = JSON.stringify(payload);
         // Conservative byte upper bound plus framing reserve. The origin remains responsible
         // for exact tokenizer/template accounting; never advertise this guard as tokenization.
-        if (new TextEncoder().encode(body).length > deployment.contextWindow - maxTokens - 1024) {
+        if (new TextEncoder().encode(outgoingBody).length > deployment.contextWindow - maxTokens - 1024) {
           throw new Error("Deployment OpenAI-compatible context limit exceeded.");
         }
         const headers = new Headers({ "content-type": "application/json", accept: "text/event-stream",
@@ -174,7 +180,7 @@ export function getDeploymentOpenAiModel(env: Cloudflare.Env, config: AiModelCon
         }
         let response: Response;
         try {
-          const outgoing = new Request(request.url, { method: "POST", body, headers,
+          const outgoing = new Request(request.url, { method: "POST", body: outgoingBody, headers,
             redirect: "manual", signal: abort.signal });
           response = deployment.transport === "vpc-service"
             ? await env.OPENAI_COMPATIBLE_VPC_SERVICE!.fetch(outgoing)

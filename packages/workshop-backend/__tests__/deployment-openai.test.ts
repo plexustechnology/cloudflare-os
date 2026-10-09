@@ -201,6 +201,20 @@ describe("deployment-owned OpenAI-compatible inference", () => {
     expect(await completeText(other, { prompt: "Synthetic question" })).toBe("Synthetic recovered");
   });
 
+  it("sends only the deployment-owned reasoning effort when configured", async () => {
+    const fetcher = vi.fn(async (request: Request) => {
+      const payload = await request.json() as Record<string, unknown>;
+      expect(payload.reasoning_effort).toBe("low");
+      return sse([{ content: "Synthetic low effort" }]);
+    });
+    const configured = environment(fetcher, { OPENAI_COMPATIBLE_CONFIG: JSON.stringify({ ...descriptor, reasoningEffort: "low" }) });
+    const handle = getModel(configured, reference, author);
+    expect((await handle.stream(handle.model, context).result()).stopReason).toBe("stop");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(() => readDeploymentOpenAiConfig(environment(fetcher, {
+      OPENAI_COMPATIBLE_CONFIG: JSON.stringify({ ...descriptor, reasoningEffort: "max" }) }))).toThrow();
+  });
+
   it("bounds the entire streaming lifetime and sanitizes an outage", async () => {
     const fetcher = vi.fn(async (_request: Request) => new Response(new ReadableStream(),
       { headers: { "content-type": "text/event-stream" } }));
