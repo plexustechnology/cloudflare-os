@@ -20,6 +20,7 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { getDeploymentOpenAiModel } from "./deployment-openai.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -357,6 +358,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  if (config.provider === "deployment-openai-compatible") return getDeploymentOpenAiModel(env, config);
   if (config.provider === "azure-foundry") return getModelDirect(config, options.sessionAffinity);
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
@@ -511,6 +513,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
+    case "deployment-openai-compatible":
+      throw new Error("Deployment OpenAI-compatible models require deployment configuration.");
     case "anthropic":
       return makeHandle({
         model: {

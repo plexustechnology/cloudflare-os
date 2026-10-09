@@ -23,6 +23,7 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   cloudflare: 'Cloudflare Workers AI',
   'azure-foundry': 'Azure Foundry',
   ollama: 'Ollama',
+  'deployment-openai-compatible': 'Deployment model',
 }
 
 // Placeholder hinting at the shape of each provider's API token.
@@ -33,6 +34,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   cloudflare: 'Cloudflare API token',
   'azure-foundry': 'Azure Foundry API key',
   ollama: '(optional)',
+  'deployment-openai-compatible': '',
 }
 
 // Example used in the custom-model placeholders for providers that have no suggested models
@@ -68,6 +70,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
   for (const provider of providerOrder) {
+    if (provider === 'deployment-openai-compatible') continue
     if (enabledProviders && provider !== 'azure-foundry' && !enabledProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.
