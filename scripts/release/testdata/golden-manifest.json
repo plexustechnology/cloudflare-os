@@ -985,6 +985,8 @@
           "/api/*",
           "/blueprint-screenshot",
           "/blueprint-screenshot/*",
+          "/teams",
+          "/teams/*",
           "/gatekeeper/*"
         ],
         "variants": {
