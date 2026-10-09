@@ -37,7 +37,7 @@ interface OverseerInternals {
              initiatorUserId: string): void;
   deliverAgentCallback(chatId: number, methodName: string, args: unknown[],
                        initiatorUserId: string, initiatorModelId: string): Promise<void>;
-  waitForAllAgentsToComplete(): Promise<void>;
+  runAlarmTasks(): Promise<void>;
   cancelAgent(chatId: number): void;
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
@@ -187,7 +187,10 @@ function startTurn(responses: (() => Response)[], {
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
     });
     impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, OWNER_USER_ID);
-    await impl.waitForAllAgentsToComplete();
+    // Keep the initiating request open across queued callback turns too. Waiting only for
+    // running agents returns in the idle gap before the callback drain starts the next turn,
+    // ending the invocation that owns its trace. The alarm's settling loop covers both.
+    await impl.runAlarmTasks();
   });
   let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
   return { workspace, gadgetId, session, ...provider };
