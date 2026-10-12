@@ -30,6 +30,8 @@ declare global {
       OPENAI_COMPATIBLE_ACCESS_CLIENT_ID?: string;
       OPENAI_COMPATIBLE_ACCESS_CLIENT_SECRET?: string;
       OPENAI_COMPATIBLE_VPC_SERVICE?: Pick<Fetcher, "fetch">;
+      // Private connection control service, absent unless explicitly provisioned by the wrapper.
+      AI_PROVIDER_ADAPTER?: Pick<Fetcher, "fetch">;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.
 

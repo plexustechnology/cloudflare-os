@@ -63,6 +63,7 @@ export default {
       test: {
         ...vitestTask([
           'vitest run',
+          'vitest run --config vitest.provider-connections.config.ts',
           'vitest run --config vitest.integration.config.ts',
         ]),
         dependsOn: ['build:format-blueprints', 'build:browser-runtime'],

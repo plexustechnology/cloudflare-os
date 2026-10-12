@@ -1,4 +1,7 @@
 import { RpcStub } from "capnweb";
+import type { ProviderConnectionInput } from "@gadgets/workshop-shared/provider-connections-api";
+import type { ProviderConnectionDescriptor, ProviderConnectionCatalog } from "@gadgets/workshop-shared/provider-connections";
+import { ProviderConnectionIndex, type ProviderConnectionReservation } from "./provider-connections.js";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -190,6 +193,8 @@ function makeUserStorage(storage: DurableObjectStorage) {
       }),
     },
     singletons: {
+      // Sanitized owner slots reserved before uncertain private credential writes.
+      providerConnections: [] as ProviderConnectionReservation[],
       // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
       // null until a Cloudflare account is connected and resolved.
       cloudflareBilling: <CloudflareBilling | null>null,
@@ -283,6 +288,7 @@ async function checkGatekeeperVendorFilter(
 
 /** Durable Object that stores information about a user. */
 export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+  #providerConnections: ProviderConnectionIndex;
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
@@ -299,9 +305,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     this.storage = makeUserStorage(ctx.storage);
+    this.#providerConnections = new ProviderConnectionIndex(this.storage.providerConnections, env.AI_PROVIDER_ADAPTER, ctx.id.toString());
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
+  }
+
+  /** Returns an immutable provisioning identifier, independent of profiles and adapter policy. */
+  async getProviderConnectionOwnerId(): Promise<string> { return this.ctx.id.toString(); }
+
+  /** Tests deployment policy using this object's immutable owner identifier. */
+  providerConnectionsAvailable(): Promise<boolean> { return this.#providerConnections.available(); }
+
+  /** Lists only the sanitized index belonging to this authenticated user. */
+  listProviderConnections(): Promise<ProviderConnectionDescriptor[]> { return this.#providerConnections.list(); }
+
+  /** Reserves one bounded connection slot before sending a protected credential once. */
+  createProviderConnection(input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.create(input);
+  }
+
+  /** Replaces an indexed connection with a generation-checked owner action. */
+  reconnectProviderConnection(connectionId: string, expectedGeneration: number, input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.reconnect(connectionId, expectedGeneration, input);
+  }
+
+  /** Returns sanitized metadata only for this user's indexed connection. */
+  getProviderConnectionStatus(connectionId: string): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.status(connectionId);
+  }
+
+  /** Invalidates local credentials through the fixed private service. */
+  disconnectProviderConnection(connectionId: string): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.disconnect(connectionId);
+  }
+
+  /** Discovers sanitized model identities without changing this user's inference model selection. */
+  discoverProviderConnectionModels(connectionId: string): Promise<ProviderConnectionCatalog> {
+    return this.#providerConnections.discover(connectionId);
   }
 
   async authenticate(token: string): Promise<void> {
