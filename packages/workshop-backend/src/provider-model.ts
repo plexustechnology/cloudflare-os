@@ -1,9 +1,10 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type FetchFunction, type Model } from "@earendil-works/pi-ai";
 import { stream as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import type { AiConnectionModelConfig } from "@gadgets/workshop-shared/api";
-import { PROVIDER_INFERENCE_URL, PROVIDER_INFERENCE_PROTOCOL, PROVIDER_CONNECTION_PLANNING_WINDOW,
+import { PROVIDER_INFERENCE_URL, PROVIDER_INFERENCE_CANCEL_URL, PROVIDER_INFERENCE_MAX_LIFETIME_MS,
+  PROVIDER_INFERENCE_CLEANUP_GRACE_MS, PROVIDER_INFERENCE_PROTOCOL, PROVIDER_CONNECTION_PLANNING_WINDOW,
   PROVIDER_CONNECTION_OUTPUT_LIMIT, type ProviderInferenceRequest, type ProviderInferencePurpose,
-  type ProviderInferenceErrorCode } from "@gadgets/workshop-shared/provider-inference";
+  type ProviderInferenceErrorCode, type ProviderInferenceCancelRequest } from "@gadgets/workshop-shared/provider-inference";
 import type { ModelHandle } from "./ai-models.js";
 import { zeroUsage } from "./ai-invoke.js";
 
@@ -45,8 +46,41 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
     handle.lastResponse = undefined;
     const output = createAssistantMessageEventStream();
     const controller = new AbortController();
+    const expiresAt = Date.now() + PROVIDER_INFERENCE_MAX_LIFETIME_MS;
+    let cancelRequest: ProviderInferenceCancelRequest | undefined;
     let adapterReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let settled = false;
+    let terminalTask: Promise<void> | undefined;
+    let readerCancellation: Promise<void> | undefined;
+    let stopReading!: () => void;
+    const abortedRead = new Promise<ReadableStreamReadResult<Uint8Array>>(resolve => {
+      stopReading = () => resolve({ done: true, value: undefined });
+    });
+    const cancelReader = () => {
+      if (!adapterReader) return Promise.resolve();
+      readerCancellation ??= adapterReader.cancel().catch(() => {});
+      return readerCancellation;
+    };
+    const cancelPrivate = async (signal: AbortSignal) => {
+      if (!cancelRequest) return;
+      const response = await env.AI_PROVIDER_ADAPTER!.fetch(PROVIDER_INFERENCE_CANCEL_URL, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(cancelRequest), signal,
+      });
+      // The private acknowledgement contains only fixed success/error values; never retain it.
+      await response.body?.cancel().catch(() => {});
+    };
+    const cleanup = async (cancelInference: boolean) => {
+      const cleanupController = new AbortController();
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const tasks = [cancelReader()];
+        if (cancelInference) tasks.push(cancelPrivate(cleanupController.signal));
+        await Promise.race([Promise.allSettled(tasks), new Promise<void>(resolve => {
+          cleanupTimer = setTimeout(resolve, PROVIDER_INFERENCE_CLEANUP_GRACE_MS);
+        })]);
+      } finally { clearTimeout(cleanupTimer); cleanupController.abort(); }
+    };
     let code: ProviderInferenceErrorCode = "provider_unavailable";
     const finish = () => {
       if (settled) return false;
@@ -57,14 +91,19 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
     };
     const fail = (reason: ProviderInferenceErrorCode) => {
       if (!finish()) return;
-      controller.abort();
-      void adapterReader?.cancel().catch(() => {});
-      const message = failed(model, reason);
-      output.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
-      output.end();
+      terminalTask = (async () => {
+        // Keep the request scope alive for bounded native cancellation before publishing its result.
+        const pendingCleanup = cleanup(true);
+        stopReading();
+        await pendingCleanup;
+        controller.abort();
+        const message = failed(model, reason);
+        output.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
+        output.end();
+      })();
     };
     const cancelled = () => fail("cancelled");
-    const timer = setTimeout(() => fail("provider_unavailable"), 180000);
+    const timer = setTimeout(() => fail("provider_unavailable"), PROVIDER_INFERENCE_MAX_LIFETIME_MS);
     options.signal?.addEventListener("abort", cancelled, { once: true });
     if (options.signal?.aborted) { cancelled(); return output; }
     // The SDK reads process.env at construction, before its custom fetch. Require effective
@@ -98,10 +137,14 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
           controller.signal.throwIfAborted();
           const request = new Request(input, init);
           if (request.url !== "https://provider-adapter.internal/v1/responses" || request.method !== "POST") throw new Error("invalid_request");
-          const envelope: ProviderInferenceRequest = { version: 1, requestId: crypto.randomUUID(),
+          const envelope: ProviderInferenceRequest = { version: 1, requestId: crypto.randomUUID(), expiresAt,
             ownerId: authority.ownerId, requesterUserId: authority.requesterUserId, workspaceOwnerId: authority.workspaceOwnerId,
             session: authority.session, connectionId: config.connectionId, generation: config.generation,
             transport: config.transport, billing: config.billing, model: config.model, purpose, payload: await request.json() };
+          if (settled) throw new Error("cancelled");
+          cancelRequest = { version: envelope.version, requestId: envelope.requestId, expiresAt,
+            ownerId: envelope.ownerId, requesterUserId: envelope.requesterUserId, workspaceOwnerId: envelope.workspaceOwnerId,
+            connectionId: envelope.connectionId, generation: envelope.generation };
           const response = await env.AI_PROVIDER_ADAPTER!.fetch(PROVIDER_INFERENCE_URL, { method: "POST",
             headers: { "content-type": "application/json" }, body: JSON.stringify(envelope), signal: controller.signal });
           if (settled) { void response.body?.cancel().catch(() => {}); throw new Error("cancelled"); }
@@ -112,7 +155,7 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
             let body = "", bytes = 0;
             try {
               if (reader) for (;;) {
-                const chunk = await reader.read();
+                const chunk = await Promise.race([reader.read(), abortedRead]);
                 if (chunk.done) break;
                 bytes += chunk.value.byteLength;
                 if (bytes > 16384) break;
@@ -133,20 +176,22 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
           // AbortSignal alone is not a response-reader cancellation contract across a service
           // binding. Own the reader so cancellation explicitly reaches the credential Worker.
           const reader = adapterReader = response.body.getReader();
+          let bytesCancelled = false;
           return new Response(new ReadableStream<Uint8Array>({
             async pull(bytes) {
               try {
-                const chunk = await reader.read();
+                const chunk = await Promise.race([reader.read(), abortedRead]);
+                if (bytesCancelled) return;
                 if (chunk.done) bytes.close();
                 else bytes.enqueue(chunk.value);
               } catch {
                 code = "stream_incomplete";
                 // Closing owned bytes avoids workerd native iterator rejection diagnostics;
                 // Pi's strict EOF check and the owned assistant stream carry the safe failure.
-                bytes.close();
+                if (!bytesCancelled) bytes.close();
               }
             },
-            async cancel() { await reader.cancel().catch(() => {}); },
+            async cancel() { bytesCancelled = true; stopReading(); await cleanup(false); },
           }, { highWaterMark: 0 }), { status: response.status, headers: {
             "content-type": "text/event-stream", "x-plexus-provider-protocol": PROVIDER_INFERENCE_PROTOCOL,
           } });
@@ -165,13 +210,18 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
               if (event.reason !== "stop" && event.reason !== "toolUse") { fail("stream_incomplete"); break; }
               event.message.provider = scope;
               finish();
+              await cleanup(false);
             }
             output.push(event);
           }
         }
         if (!settled) fail("stream_incomplete");
       } catch (error) { fail(controller.signal.aborted ? "cancelled" : safeCode(error instanceof Error ? error.message : undefined)); }
-      finally { void adapterReader?.cancel().catch(() => {}); output.end(); }
+      finally {
+        if (terminalTask) await terminalTask;
+        else await cleanup(false);
+        output.end();
+      }
     })();
     return output;
   } };
