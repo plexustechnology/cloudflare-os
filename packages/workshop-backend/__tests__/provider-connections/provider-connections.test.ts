@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { runInDurableObject, evictDurableObject } from "cloudflare:test";
 import { RpcStub } from "capnweb";
 import { describe, expect, it } from "vitest";
 import type { TestProviderUser } from "../fixtures/provider-connections-worker.js";
@@ -136,5 +136,35 @@ describe("owner-scoped provider controls in workerd", () => {
     expect(catalog.models[0].model).toHaveLength(128);
     expect(catalog.models[0].id.length).toBeGreaterThan(200);
     expect(catalog.models[0].id.length).toBeLessThanOrEqual(450);
+  });
+});
+
+
+describe("independent QA owner index boundaries", () => {
+  it("keeps concurrent server-generated reservations across UserDO eviction", async () => {
+    const owner = user();
+    const created = await Promise.all(Array.from({ length: 8 }, () => owner.createProviderConnection(input)));
+    expect(new Set(created.map(value => value.connectionId)).size).toBe(8);
+    await evictDurableObject(owner);
+    expect(new Set((await owner.listProviderConnections()).map(value => value.connectionId)))
+      .toEqual(new Set(created.map(value => value.connectionId)));
+  });
+
+  it("bounds the durable owner index to 32 slots without reserving an extra failed write", async () => {
+    const owner = user();
+    await Promise.all(Array.from({ length: 32 }, () => owner.createProviderConnection(input)));
+    await expect(rejection(owner, instance => instance.createProviderConnection(input))).resolves.toContain("invalid_request");
+    expect(await owner.listProviderConnections()).toHaveLength(32);
+  });
+
+  it("rechecks adapter enablement for a previously minted validated facade", async () => {
+    const owner = user();
+    using facade = new RpcStub(new ProviderConnectionsApiImpl(() => owner));
+    const connection = await facade.create(input);
+    await mode(owner, "disabled");
+    for (const operation of [() => facade.list(), () => facade.status(connection.connectionId),
+      () => facade.disconnect(connection.connectionId), () => facade.discover(connection.connectionId)]) {
+      await expect(operation()).rejects.toThrow("adapter_disabled");
+    }
   });
 });

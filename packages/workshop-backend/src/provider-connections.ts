@@ -27,7 +27,10 @@ function counter(value: unknown): value is number {
 }
 function label(value: unknown): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= 80 &&
-    value === value.trim() && !/[\x00-\x1f\x7f]/.test(value);
+    value === value.trim() && !Array.from(value).some(character => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
 }
 function consent(value: unknown): value is ProviderConnectionInput["consent"] {
   return object(value) && keys(value, ["billing", "ownerInteractive", "sessionCompaction"]) && value.billing === "openai-platform-api" && value.ownerInteractive === true &&
@@ -109,7 +112,8 @@ export class ProviderConnectionIndex {
     return entry;
   }
 
-  async #call(action: Action, connectionId?: string, expectedGeneration?: number, input?: ProviderConnectionInput): Promise<Record<string, unknown>> {
+  async #call(action: Action, connectionId?: string, expectedGeneration?: number, input?: ProviderConnectionInput,
+    reservation?: Pick<ProviderConnectionReservation, "label" | "consent">): Promise<Record<string, unknown>> {
     const binding = this.#binding;
     if (!binding) return failure("adapter_disabled");
     const controller = new AbortController();
@@ -125,7 +129,8 @@ export class ProviderConnectionIndex {
           body: JSON.stringify({ version: 1, action, ownerId: this.#ownerId,
             ...(connectionId === undefined ? {} : { connectionId }),
             ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
-            ...(input === undefined ? {} : { input }) }),
+            ...(input === undefined ? {} : { input }),
+            ...(reservation === undefined ? {} : { reservation }) }),
         });
         if (!response.body) failure();
         reader = response.body.getReader();
@@ -150,6 +155,8 @@ export class ProviderConnectionIndex {
       })()]);
     } catch (error) {
       // Only our fixed categories survive transport/storage/provider failures and telemetry.
+      // The original cause may contain credential or provider diagnostics; retain only our fixed category.
+      // oxlint-disable-next-line preserve-caught-error
       if (error instanceof Error && ERROR_CODES.has(error.message)) throw new Error(error.message);
       return failure();
     } finally { clearTimeout(timer); void reader?.cancel().catch(() => {}); }
@@ -219,8 +226,8 @@ export class ProviderConnectionIndex {
 
   /** Keeps the index entry so a disconnected connection remains owner-visible and reconnectable. */
   async disconnect(connectionId: string): Promise<ProviderConnectionDescriptor> {
-    this.#owned(connectionId);
-    return descriptor((await this.#call("disconnect", connectionId)).connection, connectionId);
+    const { label, consent } = this.#owned(connectionId);
+    return descriptor((await this.#call("disconnect", connectionId, undefined, undefined, { label, consent })).connection, connectionId);
   }
 
   /** Validates private catalog metadata again before exposing it to the owner. */
