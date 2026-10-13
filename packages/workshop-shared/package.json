@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "exports": {
+    "./provider-inference": {
+      "types": "./src/provider-inference.ts",
+      "import": "./src/provider-inference.ts"
+    },
     "./provider-connections-api": {
       "types": "./src/provider-connections-api.ts",
       "import": "./src/provider-connections-api.ts"

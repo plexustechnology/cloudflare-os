@@ -1,6 +1,7 @@
 import type { ProviderConnectionDescriptor } from "@gadgets/workshop-shared/provider-connections";
 import { UserDurableObject } from "../../src/user.js";
 export * from "./external-observer-worker.js";
+export { OverseerDurableObject } from "../../src/server.js";
 
 /** Synthetic private service fixture exercising the production UserDO index and owner context. */
 export class TestProviderUser extends UserDurableObject {
@@ -12,6 +13,7 @@ export class TestProviderUser extends UserDurableObject {
         const body = await req.json() as {
           action: string; ownerId: string; connectionId: string; expectedGeneration?: number;
           input?: { label: string; consent: ProviderConnectionDescriptor["consent"] };
+          reservation?: { label: string; consent: ProviderConnectionDescriptor["consent"] };
         };
         if (body.ownerId !== ctx.id.toString()) throw new Error("untrusted owner");
         const mode = ctx.storage.kv.get<string>("fixture.mode");
@@ -35,6 +37,11 @@ export class TestProviderUser extends UserDurableObject {
           ctx.storage.kv.put(key, connection);
           if (mode === "lost-after-write") throw new Error("SYNTHETIC_SECRET_ERROR");
         }
+        if (!connection && body.action === "disconnect" && body.reservation) {
+          connection = { connectionId: body.connectionId, label: body.reservation.label, consent: body.reservation.consent,
+            provider: "openai", transport: "openai-api-responses", status: "disabled", credentialConfigured: false,
+            generation: 0, credentialRevision: 1, createdAt: Date.now(), updatedAt: Date.now() };
+        }
         if (!connection) return Response.json({ ok: false, error: { code: "connection_required" } }, { status: 404 });
         if (body.action === "disconnect") {
           connection = { ...connection, status: "disabled", credentialConfigured: false,
@@ -42,8 +49,9 @@ export class TestProviderUser extends UserDurableObject {
           ctx.storage.kv.put(key, connection);
         }
         const model = mode === "encoded-model" ? `f${":".repeat(127)}` : "fixture-model";
-        return Response.json({ ok: true, connection: { ...connection, extraCredential: "SYNTHETIC_PRIVATE_CREDENTIAL" },
-          ...(body.action === "discover" ? { catalog: { status: "fresh", fetchedAt: Date.now(), models: [{
+        return Response.json({ ok: true, connection: { ...connection, extraCredential: "SYNTHETIC_PRIVATE_CREDENTIAL",
+          ...(ctx.storage.kv.get("fixture.inferenceEnabled") ? { inferenceEnabled: true } : {}) },
+          ...(body.action === "discover" ? { catalog: { status: ctx.storage.kv.get("fixture.catalogStatus") ?? "fresh", fetchedAt: Date.now(), models: [{
             id: `provider-connection/${body.connectionId}/${encodeURIComponent(model)}`, model, name: model,
             capabilities: { contextWindow: null, maxOutputTokens: null, images: "unknown", reasoning: "unknown" },
           }] } } : {}),

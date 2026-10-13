@@ -1,5 +1,5 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
-import type { AiModelConfig, AiModelProvider, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
+import type { AiModelConfig, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
 // Bounds attachment storage and the bytes replayed into model requests.
@@ -40,7 +40,8 @@ const ATTACHMENT_SUPPORT_BY_PROVIDER = {
   cloudflare: isTextOrImageMime,
   ollama: isTextOrImageMime,
   "deployment-openai-compatible": isTextLikeAttachmentMimeType,
-} satisfies Record<AiModelProvider, (mimeType: string) => boolean>;
+  "provider-connection": isTextOrImageMime,
+} satisfies Record<AiModelConfig["provider"], (mimeType: string) => boolean>;
 
 function sanitizeChatAttachmentMimeType(mimeType: string | undefined): string {
   if (!mimeType || /[\r\n]/.test(mimeType)) return "application/octet-stream";
@@ -55,7 +56,7 @@ function sanitizeChatAttachmentName(name: string | undefined): string | undefine
 
 /** Reject an attachment type that the selected provider cannot accept. */
 export function assertChatAttachmentSupportedByProvider(
-  provider: AiModelProvider | undefined,
+  provider: AiModelConfig["provider"] | undefined,
   mimeType: string,
   byteLength: number,
 ): void {

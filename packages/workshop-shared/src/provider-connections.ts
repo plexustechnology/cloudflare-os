@@ -32,6 +32,17 @@ export interface ProviderConnectionDescriptor {
   createdAt: number;
   /** Most recent local state change as Unix milliseconds. */
   updatedAt: number;
+  /** True only when private deployment policy permits inference; absence means unavailable. */
+  inferenceEnabled?: boolean;
+  /** One strictly completed call for this generation, never universal model readiness. */
+  lastSuccessfulInference?: {
+    /** Provider model used by the completed call. */
+    model: string;
+    /** Current connection authority generation at completion. */
+    generation: number;
+    /** Validated completion time as Unix milliseconds. */
+    completedAt: number;
+  };
 }
 
 /** Allowlisted model identity; OpenAI's catalog does not validate inference capabilities. */

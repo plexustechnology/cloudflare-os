@@ -56,6 +56,8 @@ export async function completeText(handle: ModelHandle, args: {
   messages?: Message[];
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Owner-session summary purpose, enforced by the private model handle. */
+  purpose?: "sessionCompaction";
 }): Promise<string> {
   const messages: Message[] = args.messages ??
       [{ role: "user", content: args.prompt ?? "", timestamp: Date.now() }];
@@ -66,6 +68,7 @@ export async function completeText(handle: ModelHandle, args: {
     maxTokens: args.maxTokens,
     signal: args.signal,
     thinking: false,
+    ...(args.purpose ? { purpose: args.purpose } : {}),
   });
   const message = await stream.result();
   if (message.stopReason === "error" || message.stopReason === "aborted") {

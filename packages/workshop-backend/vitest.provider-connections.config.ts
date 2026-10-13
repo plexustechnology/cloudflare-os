@@ -8,9 +8,12 @@ export default defineConfig({
     miniflare: {
       compatibilityDate: "2026-02-02",
       compatibilityFlags: ["experimental", "nodejs_compat", "allow_irrevocable_stub_storage"],
+      kvNamespaces: ["BLUEPRINTS", "AVATARS"],
+      r2Buckets: ["BLUEPRINT_CONTENT"],
       durableObjects: {
         TEST_PROVIDER_USER: { className: "TestProviderUser", useSQLite: true },
         TEST_PROVIDER_DISABLED: { className: "UserDurableObject", useSQLite: true },
+        TEST_PROVIDER_OVERSEER: { className: "OverseerDurableObject", useSQLite: true },
       },
     },
   })],

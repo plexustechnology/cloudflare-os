@@ -1,4 +1,4 @@
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
+import { AiChatAuthorInfo, AiModelConfig, type AiModelProvider, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
 import { UserAiModelRecord } from "./user.js";
 import { deploymentOpenAiModelConfig, readDeploymentOpenAiConfig, type DeploymentOpenAiConfig } from "./deployment-openai.js";
 
@@ -142,7 +142,7 @@ export class AiGatewayConfig {
         return {
           profile: { type: "agent", id: modelId, name: models[modelId].name },
           config: {
-            provider: provider as AiModelConfig["provider"],
+            provider: provider as AiModelProvider,
             model: modelId,
             // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
             // reads the real values from env. We set them to empty strings here to satisfy

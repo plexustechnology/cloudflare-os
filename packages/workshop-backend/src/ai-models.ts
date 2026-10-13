@@ -15,12 +15,13 @@ import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
+import { AiChatAuthorInfo, AiModelConfig, type AiLegacyModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import { getDeploymentOpenAiModel } from "./deployment-openai.js";
+import { getProviderConnectionModel, type ProviderModelAuthority } from "./provider-model.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -51,6 +52,7 @@ type GatewayMetadataContext = {
 };
 
 type ModelRoutingOptions = {
+  connection?: ProviderModelAuthority;
   sessionAffinity?: string;
   userGateway?: UserGatewayRouting;
   metadata?: GatewayMetadataContext;
@@ -61,6 +63,8 @@ type ModelRoutingOptions = {
  * handle-level knobs.
  */
 export type ModelStreamOptions = SimpleStreamOptions & {
+  /** Backend-only purpose tag for explicitly consented same-session compaction. */
+  purpose?: "sessionCompaction";
   /**
    * When false, suppress the handle's per-API thinking/reasoning defaults so the request runs
    * without extended thinking (as far as the model allows). Used by completeText(): one-shot
@@ -143,7 +147,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
 // Token limits for a synthesized model. SUGGESTED_MODELS remains authoritative (compaction
 // budgets in agent-compaction.ts are computed from it and must not change); pi's catalog fills
 // gaps for models we don't list, and unknown models get conservative defaults.
-function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
+function modelTokenWindow(config: AiLegacyModelConfig, catalog: Model<Api> | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   return {
@@ -177,7 +181,7 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
 // thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
 // including unified billing on a user's own gateway -- is orthogonal to which API a request
 // speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
-function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
+function gatewayNativeModel(config: AiLegacyModelConfig, gatewayUrl: string): Model<Api> | undefined {
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
@@ -358,6 +362,10 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  if (config.provider === "provider-connection") {
+    if (!options.connection) throw new Error("connection_forbidden");
+    return getProviderConnectionModel(env, config, options.connection);
+  }
   if (config.provider === "deployment-openai-compatible") return getDeploymentOpenAiModel(env, config);
   if (config.provider === "azure-foundry") return getModelDirect(config, options.sessionAffinity);
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
@@ -383,7 +391,7 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
 // Gateway. Supports every provider AI Gateway serves, including Workers AI. Billed to the
 // user's Cloudflare credits; no provider API key required.
 function getModelViaUserGateway(
-  config: AiModelConfig,
+  config: AiLegacyModelConfig,
   metadata: GatewayMetadata,
   userGateway: UserGatewayRouting,
   sessionAffinity?: string,
@@ -445,7 +453,7 @@ function bindingFetch(binding: Ai): FetchFunction {
 // Used only for requests that are NOT billed to a connected user's account.
 function getModelViaGateway(
   gwConfig: AiGatewayConfig,
-  config: AiModelConfig,
+  config: AiLegacyModelConfig,
   initiator: AiChatAuthorInfo,
   options: ModelRoutingOptions,
 ): ModelHandle {
@@ -509,7 +517,7 @@ function getModelViaGateway(
 }
 
 // Direct provider access using the credentials in the model config itself (no AI Gateway).
-function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelHandle {
+function getModelDirect(config: AiLegacyModelConfig, sessionAffinity?: string): ModelHandle {
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
@@ -702,6 +710,7 @@ export class LanguageModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<LanguageModelBinding> {
+    if (this.ctx.props.config.provider === "provider-connection") throw new Error("connection_forbidden");
     let model = getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });

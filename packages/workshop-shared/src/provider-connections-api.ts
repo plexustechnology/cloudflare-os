@@ -1,4 +1,5 @@
 import type { RpcTarget } from "capnweb";
+import type { AiChatAuthorInfo } from "./api.js";
 import type { ProviderConnectionConsent, ProviderConnectionDescriptor, ProviderConnectionCatalog } from "./provider-connections.js";
 
 /** Protected write-only credential intake for the initial OpenAI Platform API profile. */
@@ -15,6 +16,10 @@ export interface ProviderConnectionInput {
 export interface ProviderConnectionsApi extends RpcTarget {
   /** Lists the owner's bounded connection index, including recoverable reservations. */
   list(): Promise<ProviderConnectionDescriptor[]>;
+  /** Reserves a credential-free identifier before protected key intake or cancellation. */
+  reserve(input: Pick<ProviderConnectionInput, "label" | "consent">): Promise<ProviderConnectionDescriptor>;
+  /** Adds a server-constructed model after owner, generation, policy and fresh catalog checks. */
+  selectModel(connectionId: string, expectedGeneration: number, model: string): Promise<AiChatAuthorInfo>;
   /** Reserves an opaque identifier before submitting a write-only credential. */
   create(input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor>;
   /**

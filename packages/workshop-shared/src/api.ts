@@ -1166,8 +1166,8 @@ export type AiGatewayInfo = {
   enabled: false;
 };
 
-/** Configuration specifying how to connect to an AI model provider. */
-export type AiModelConfig = {
+/** Legacy configuration specifying provider credentials or deployment-owned routing. */
+export type AiLegacyModelConfig = {
   /** Which AI provider hosts the model? */
   provider: AiModelProvider;
 
@@ -1196,6 +1196,25 @@ export type AiModelConfig = {
   /** Server-resolved response reservation for deployment-openai-compatible; ignored by other providers. */
   outputLimit?: number;
 };
+
+/** Token-free personal model, constructed only by authenticated owner selection. */
+export type AiConnectionModelConfig = {
+  /** Discriminator separating personal infrastructure authority from legacy credentials. */
+  provider: "provider-connection";
+  /** Owner-indexed opaque connection identifier. */
+  connectionId: string;
+  /** Provider model slug from a fresh allowlisted catalog. */
+  model: string;
+  /** Authority generation captured by selection; reconnect requires reselection. */
+  generation: number;
+  /** Fixed initial native transport. */
+  transport: "openai-api-responses";
+  /** Explicit owner-selected funding mode. */
+  billing: "openai-platform-api";
+};
+
+/** Model configuration retaining legacy records alongside token-free personal selections. */
+export type AiModelConfig = AiLegacyModelConfig | AiConnectionModelConfig;
 
 /**
  * Workers AI adds the response cap to the prompt and rejects a request whose total exceeds the

@@ -325,6 +325,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#providerConnections.create(input);
   }
 
+  /** Reserves a credential-free owner slot before cancellable key submission. */
+  reserveProviderConnection(input: Pick<ProviderConnectionInput, "label" | "consent">): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.reserve(input);
+  }
+
+  /** Constructs the only permitted token-free model record from current owner authority. */
+  async selectProviderConnectionModel(connectionId: string, expectedGeneration: number, model: string): Promise<AiChatAuthorInfo> {
+    const selected = await this.#providerConnections.selection(connectionId, expectedGeneration, model);
+    const profile: AiChatAuthorInfo = { type: "agent", id: `provider-connection/${connectionId}/${encodeURIComponent(model)}`,
+      name: `${model} (${selected.label} · OpenAI API billing)` };
+    this.storage.aiModels.put({ profile, config: { provider: "provider-connection", connectionId, model,
+      generation: selected.generation, transport: selected.transport, billing: selected.consent.billing } });
+    return profile;
+  }
+
   /** Replaces an indexed connection with a generation-checked owner action. */
   reconnectProviderConnection(connectionId: string, expectedGeneration: number, input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
     return this.#providerConnections.reconnect(connectionId, expectedGeneration, input);
@@ -592,6 +607,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+    if (config.provider === "provider-connection" || profile.id.startsWith("provider-connection/")) {
+      throw new Error("Personal models require explicit provider connection selection.");
+    }
     if (config.provider === "deployment-openai-compatible" || profile.id.startsWith("deployment-openai-compatible/")) {
       throw new Error("Deployment OpenAI-compatible models are configured by the operator.");
     }
@@ -620,12 +638,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async setQuickModel(id: string | null): Promise<void> {
+    if (id?.startsWith("provider-connection/") || (id && this.storage.aiModels.get(id)?.config.provider === "provider-connection")) {
+      throw new Error("connection_forbidden");
+    }
     this.storage.quickModel.put(id);
   }
 
   async getQuickModel(): Promise<null | string> {
     let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
+    const model = result ? this.storage.aiModels.get(result) : undefined;
+    if (result && model && model.config.provider !== "provider-connection") {
       return result;
     } else {
       return null;
@@ -756,11 +778,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    let gwConfig = getAiGatewayConfig(this.env);
-
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
+    if (modelId?.startsWith("provider-connection/")) {
+      result.aiModel = this.storage.aiModels.get(modelId);
+      if (result.aiModel?.config.provider !== "provider-connection") throw new Error("model_unavailable");
+      // Personal resolution neither consults gateway credentials nor selects auxiliary funding.
+      return result;
+    }
+    let gwConfig = getAiGatewayConfig(this.env);
     if (modelId) {
       // In AI Gateway mode, resolve gateway models first.
       if (gwConfig) {
@@ -773,6 +800,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Resolve the quick model (used for lightweight tasks like title generation).
+    if (result.aiModel?.config.provider === "provider-connection") return result;
     if (result.aiModel?.config.provider === "deployment-openai-compatible") {
       result.quickModel = result.aiModel.config;
     } else if (gwConfig) {
@@ -782,7 +810,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let quickModelId = this.storage.quickModel.get();
       if (quickModelId) {
         let quickModel = this.storage.aiModels.get(quickModelId);
-        if (quickModel) {
+        if (quickModel && quickModel.config.provider !== "provider-connection") {
           result.quickModel = quickModel.config;
         }
       }

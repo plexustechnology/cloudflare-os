@@ -51,12 +51,23 @@ function descriptor(value: unknown, connectionId: string): ProviderConnectionDes
       typeof value.status !== "string" || !["pending", "disabled", "reconnect-required"].includes(value.status) ||
       typeof value.credentialConfigured !== "boolean" || !counter(value.generation) ||
       !counter(value.credentialRevision) || value.generation < 1 || value.credentialRevision < 1 ||
-      !counter(value.createdAt) || !counter(value.updatedAt) || value.updatedAt < value.createdAt) failure();
+      !counter(value.createdAt) || !counter(value.updatedAt) || value.updatedAt < value.createdAt ||
+      (value.inferenceEnabled !== undefined && typeof value.inferenceEnabled !== "boolean")) failure();
+  let success: ProviderConnectionDescriptor["lastSuccessfulInference"];
+  if (value.lastSuccessfulInference !== undefined) {
+    const s = value.lastSuccessfulInference;
+    if (!object(s) || !keys(s, ["model", "generation", "completedAt"]) ||
+        typeof s.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(s.model) ||
+        s.generation !== value.generation || !counter(s.completedAt) || s.completedAt < 1 || s.completedAt > Date.now()) failure();
+    success = { model: s.model, generation: value.generation, completedAt: s.completedAt };
+  }
   return { connectionId, label: value.label, provider: "openai", transport: "openai-api-responses",
     consent: { billing: "openai-platform-api", ownerInteractive: true, sessionCompaction: value.consent.sessionCompaction },
     status: value.status as ProviderConnectionDescriptor["status"], credentialConfigured: value.credentialConfigured,
     generation: value.generation, credentialRevision: value.credentialRevision,
-    createdAt: value.createdAt, updatedAt: value.updatedAt };
+    createdAt: value.createdAt, updatedAt: value.updatedAt,
+    ...(value.inferenceEnabled === undefined ? {} : { inferenceEnabled: value.inferenceEnabled }),
+    ...(success ? { lastSuccessfulInference: success } : {}) };
 }
 
 function catalog(value: unknown, connectionId: string): ProviderConnectionCatalog {
@@ -184,13 +195,36 @@ export class ProviderConnectionIndex {
   /** Validates before reserving; the durable reservation precedes any uncertain credential write. */
   async create(input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
     const safeInput = intake(input);
+    const reserved = await this.reserve({ label: safeInput.label, consent: safeInput.consent });
+    return descriptor((await this.#call("create", reserved.connectionId, 0, safeInput)).connection, reserved.connectionId);
+  }
+
+  /** Durable credential-free cancellation identity, minted before key intake. */
+  async reserve(input: Pick<ProviderConnectionInput, "label" | "consent">): Promise<ProviderConnectionDescriptor> {
+    if (!object(input) || !keys(input, ["label", "consent"]) || !label(input.label) || !consent(input.consent)) failure("invalid_request");
     if (!await this.available()) failure("adapter_disabled");
     const entries = this.#index();
     if (entries.length >= MAX_CONNECTIONS) failure("invalid_request");
     const connectionId = crypto.randomUUID();
-    entries.push({ connectionId, label: safeInput.label, consent: safeInput.consent, createdAt: Date.now() });
+    entries.push({ connectionId, label: input.label, consent: { ...input.consent }, createdAt: Date.now() });
     try { this.#storage.put(entries); } catch { return failure(); }
-    return descriptor((await this.#call("create", connectionId, 0, safeInput)).connection, connectionId);
+    return this.status(connectionId);
+  }
+
+  /** Capture a currently permitted model only after validating the selected authority. */
+  async selection(connectionId: string, expectedGeneration: number, model: string): Promise<ProviderConnectionDescriptor> {
+    this.#owned(connectionId);
+    if (!counter(expectedGeneration) || expectedGeneration < 1 || typeof model !== "string" ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(model)) failure("invalid_request");
+    const current = await this.status(connectionId);
+    if (current.generation !== expectedGeneration || current.status !== "pending" || !current.credentialConfigured) failure("reconnect_required");
+    if (current.inferenceEnabled !== true) failure("adapter_disabled");
+    const choices = await this.discover(connectionId);
+    if (choices.status !== "fresh" || !choices.models.some(choice => choice.model === model)) failure("invalid_request");
+    const fresh = await this.status(connectionId);
+    if (fresh.generation !== expectedGeneration || fresh.status !== "pending" || !fresh.credentialConfigured) failure("reconnect_required");
+    if (fresh.inferenceEnabled !== true) failure("adapter_disabled");
+    return fresh;
   }
 
   /** Explicit generation-zero recovery creates only after a confirmed absent adapter record. */
@@ -246,6 +280,14 @@ export class ProviderConnectionsApiImpl extends RpcTarget implements ProviderCon
   constructor(getUser: () => DurableObjectStub<UserDurableObject>) { super(); this.#getUser = getUser; }
   /** Lists sanitized owner metadata. */
   list(): Promise<ProviderConnectionDescriptor[]> { return this.#getUser().listProviderConnections(); }
+  /** Reserves a key-free owner slot for cancellable intake. */
+  reserve(input: Pick<ProviderConnectionInput, "label" | "consent">): Promise<ProviderConnectionDescriptor> {
+    return this.#getUser().reserveProviderConnection(input);
+  }
+  /** Adds a server-resolved personal model without browser profile authority. */
+  selectModel(connectionId: string, expectedGeneration: number, model: string) {
+    return this.#getUser().selectProviderConnectionModel(connectionId, expectedGeneration, model);
+  }
   /** Submits a write-only credential once. */
   create(input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> { return this.#getUser().createProviderConnection(input); }
   /** Performs one explicit generation-checked replacement. */
