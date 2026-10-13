@@ -1,3 +1,4 @@
+import { isPersonalProviderModel } from "./features/providers/providerConnectionFlow";
 import { logRpcFailure } from "./rpcErrors";
 import {
   Fragment,
@@ -3019,6 +3020,12 @@ function ChatInterface({
   // Get metadata for selected chat
   const currentChatMetadata =
     selectedChatId !== null ? cacheRef.current.chats.get(selectedChatId) : null;
+
+  const hasPersonalFunding = isPersonalProviderModel(selectedModel ?? '') ||
+    isPersonalProviderModel(currentChatMetadata?.activeAgent?.id ?? '') ||
+    (selectedChatId !== null && (cacheRef.current.messages.get(selectedChatId) ?? []).some(
+      message => isPersonalProviderModel(message.author.id),
+    ));
 
   // Download a committed chat attachment. Image bytes are already inlined on the message; other
   // attachments are fetched on demand over the authenticated RPC connection.
@@ -6264,16 +6271,17 @@ function ChatInterface({
                     })()}
                   />
 
-                  {/* Token / cost summary. */}
-                  <div className="-mt-1 flex min-h-[1.25rem] items-start justify-end gap-4 px-4 pb-1 font-mono text-[11px] leading-4 text-kumo-inactive">
+                  {/* API spending is unknown locally, even when Pi technical catalog costs are zero. */}
+                  <div className="-mt-1 flex min-h-[1.25rem] flex-wrap items-start justify-end gap-x-4 gap-y-1 px-4 pb-1 font-mono text-[11px] leading-4 text-kumo-inactive">
                     {currentChatMetadata?.totalTokens != null && (
                       <span>
                         {currentChatMetadata.totalTokens.toLocaleString()} tokens
                       </span>
                     )}
                     {currentChatMetadata?.totalCost != null && (
-                      <span>${currentChatMetadata.totalCost.toFixed(4)}</span>
+                      <span>{hasPersonalFunding ? "Cloudflare cost: " : ""}${currentChatMetadata.totalCost.toFixed(4)}</span>
                     )}
+                    {hasPersonalFunding && <span>OpenAI API cost unknown; billed by OpenAI</span>}
                   </div>
                 </div>
               </div>
