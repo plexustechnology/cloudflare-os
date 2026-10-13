@@ -43,6 +43,7 @@ export const ProviderConnectionCard = ({ api, connection, onReconnect, onChanged
     const value = await api.discover(connection.connectionId)
     const current = await api.status(connection.connectionId)
     if (operation !== epoch.current) return
+    setClock(Date.now())
     if (current.generation === generation) setCatalog({ generation, value })
     else setCatalog(undefined)
     await onChanged()

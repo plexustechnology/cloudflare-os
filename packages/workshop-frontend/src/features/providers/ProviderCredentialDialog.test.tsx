@@ -126,6 +126,32 @@ describe('explicit API credential dialog', () => {
     expect(toast).toHaveBeenCalledWith({ title: 'Model added. Choose it in your chat.', variant: 'success' })
     expect(localStorage.length).toBe(0)
   })
+  it.each([
+    { catalogOffset: 0, selectable: true, description: 'a newly fetched current catalog' },
+    { catalogOffset: 1_000, selectable: false, description: 'a genuinely future-dated catalog' },
+    { catalogOffset: -300_001, selectable: false, description: 'an expired catalog' },
+  ])('updates time after delayed discovery while preserving the guard for $description', async ({ catalogOffset, selectable }) => {
+    let clock = 100_000
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const controls = new Controls()
+    let finishDiscovery!: (value: ProviderConnectionCatalog) => void
+    controls.discoverCall.mockImplementation(() => new Promise(resolve => { finishDiscovery = resolve }))
+    api = new RpcStub<ProviderConnectionsApi>(controls)
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<ProviderConnectionCard api={api!} connection={{ ...record, inferenceEnabled: true }}
+      onReconnect={() => {}} onChanged={async () => {}} onModelAdded={async () => {}} />))
+    await act(async () => button('Refresh model catalog').click())
+    expect(controls.discoverCall).toHaveBeenCalledTimes(1)
+    clock += 1_000
+    await act(async () => finishDiscovery({ status: 'fresh', fetchedAt: clock + catalogOffset, models: [{
+      id: 'model-id', model: 'test-model', name: 'test-model',
+      capabilities: { contextWindow: null, maxOutputTokens: null, images: 'unknown', reasoning: 'unknown' },
+    }] }))
+    expect(button('Use model').disabled).toBe(!selectable)
+    expect(controls.selectCall).not.toHaveBeenCalled()
+  })
   it('requires a disconnect confirmation and keeps the provider-side revocation distinction visible', async () => {
     const controls = new Controls()
     api = new RpcStub<ProviderConnectionsApi>(controls)
