@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
-import type { ProviderConnectionInput } from "@gadgets/workshop-shared/provider-connections-api";
-import type { ProviderConnectionDescriptor, ProviderConnectionCatalog } from "@gadgets/workshop-shared/provider-connections";
+import type { ProviderConnectionInput, ProviderSubscriptionInput, ProviderSubscriptionHandoff, ProviderSubscriptionCompletion } from "@gadgets/workshop-shared/provider-connections-api";
+import type { ProviderConnectionDescriptor, ProviderConnectionCatalog, ProviderSubscriptionDescriptor } from "@gadgets/workshop-shared/provider-connections";
 import { ProviderConnectionIndex, type ProviderConnectionReservation } from "./provider-connections.js";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
@@ -359,6 +359,33 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   discoverProviderConnectionModels(connectionId: string): Promise<ProviderConnectionCatalog> {
     return this.#providerConnections.discover(connectionId);
   }
+
+  /** Test subscription management policy for this immutable owner. */
+  providerSubscriptionsAvailable(): Promise<boolean> { return this.#providerConnections.subscriptionAvailable(); }
+  /** List subscription slots separately from API connections. */
+  listProviderSubscriptions(): Promise<ProviderSubscriptionDescriptor[]> { return this.#providerConnections.listSubscriptions(); }
+  /** Reserve sanitized consent before starting local helper setup. */
+  reserveProviderSubscription(input: ProviderSubscriptionInput): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.reserveSubscription(input); }
+  /** Validate captured intent consent against current native owner authority. */
+  prepareProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput): Promise<ProviderSubscriptionInput> {
+    return this.#providerConnections.prepareSubscription(connectionId, generation, input);
+  }
+  /** Admit one server-minted handoff through the private adapter binding. */
+  beginProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput, attemptId: string, expiresAt: number, callbackPort: number): Promise<ProviderSubscriptionHandoff> {
+    return this.#providerConnections.beginSubscription(connectionId, generation, input, attemptId, expiresAt, callbackPort);
+  }
+  /** Relay sealed callback text without reading its plaintext. */
+  completeProviderSubscription(connectionId: string, attemptId: string, text: string): Promise<ProviderSubscriptionCompletion> { return this.#providerConnections.completeSubscription(connectionId, attemptId, text); }
+  /** Fence one exact captured intent while preserving unrelated authority. */
+  cancelProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput, attemptId: string, expiresAt: number): Promise<ProviderSubscriptionDescriptor> {
+    return this.#providerConnections.cancelSubscription(connectionId, generation, input, attemptId, expiresAt);
+  }
+  /** Read sanitized registration and pending recovery status. */
+  getProviderSubscriptionStatus(connectionId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.subscriptionStatus(connectionId); }
+  /** Cancel only the exact pending correlation selected by its owner. */
+  cancelPendingProviderSubscription(connectionId: string, attemptId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.cancelPendingSubscription(connectionId, attemptId); }
+  /** Delete local subscription authority through the fixed private service. */
+  disconnectProviderSubscription(connectionId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.disconnectSubscription(connectionId); }
 
   async authenticate(token: string): Promise<void> {
     let tokenBytes: Uint8Array;

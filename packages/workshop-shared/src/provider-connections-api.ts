@@ -1,6 +1,6 @@
 import type { RpcTarget } from "capnweb";
 import type { AiChatAuthorInfo } from "./api.js";
-import type { ProviderConnectionConsent, ProviderConnectionDescriptor, ProviderConnectionCatalog } from "./provider-connections.js";
+import type { ProviderConnectionConsent, ProviderConnectionDescriptor, ProviderConnectionCatalog, ProviderSubscriptionDescriptor, ProviderSubscriptionConsent } from "./provider-connections.js";
 
 /** Protected write-only credential intake for the initial OpenAI Platform API profile. */
 export interface ProviderConnectionInput {
@@ -33,4 +33,58 @@ export interface ProviderConnectionsApi extends RpcTarget {
   discover(connectionId: string): Promise<ProviderConnectionCatalog>;
   /** Invalidates local authority; API-key remote revocation is not supported by this profile. */
   disconnect(connectionId: string): Promise<ProviderConnectionDescriptor>;
+}
+
+/** Credential-free consent captured by an authenticated owner capability. */
+export interface ProviderSubscriptionInput {
+  /** Trimmed label of 1 to 80 characters. */
+  label: string;
+  /** Explicit ChatGPT funding and purpose acknowledgments. */
+  consent: ProviderSubscriptionConsent;
+}
+
+/** Public setup for a callback-only helper, containing no verifier or credential. */
+export interface ProviderSubscriptionHandoff {
+  /** Server-generated correlation. */
+  attemptId: string;
+  /** Fixed provider authorization URL with public PKCE challenge. */
+  authorizationUrl: string;
+  /** Original intent deadline in Unix milliseconds. */
+  expiresAt: number;
+  /** Canonical base64url SPKI for this attempt's RSA receiver. */
+  receiver: string;
+}
+
+/** Explicit result of this exact sign-in, independent of metadata changed by another tab. */
+export interface ProviderSubscriptionCompletion {
+  /** Whether this callback saved authorization or the owner declined consent. */
+  outcome: "saved" | "denied";
+  /** Current sanitized state; a denied callback may retain a previously saved grant. */
+  connection: ProviderSubscriptionDescriptor;
+}
+
+/** One-shot owner intent; dispose when finished, and inspect status after uncertain outcomes. */
+export interface ProviderSubscriptionAttempt extends RpcTarget {
+  /** Admit once using the exact already-listening loopback port. */
+  begin(callbackPort: number): Promise<ProviderSubscriptionHandoff>;
+  /** Submit one opaque encrypted capsule; never accepts plaintext callback fields. */
+  complete(sealedCapsule: string): Promise<ProviderSubscriptionCompletion>;
+  /** Fence this exact intent without deleting a newer or completed grant. */
+  cancel(): Promise<ProviderSubscriptionDescriptor>;
+}
+
+/** Authenticated subscription management, distinct from API billing and inference controls. */
+export interface ProviderSubscriptionConnectionsApi extends RpcTarget {
+  /** List this owner's bounded subscription slots. */
+  list(): Promise<ProviderSubscriptionDescriptor[]>;
+  /** Reserve credential-free identity before helper setup. */
+  reserve(input: ProviderSubscriptionInput): Promise<ProviderSubscriptionDescriptor>;
+  /** Validate current authority and mint a five-minute intent without starting OAuth. */
+  prepare(connectionId: string, expectedGeneration: number, input: ProviderSubscriptionInput): Promise<import("capnweb").RpcStub<ProviderSubscriptionAttempt>>;
+  /** Read sanitized registration and exact pending recovery metadata. */
+  status(connectionId: string): Promise<ProviderSubscriptionDescriptor>;
+  /** Fence only the exact correlation obtained from this owner's pending status. */
+  cancelPending(connectionId: string, attemptId: string): Promise<ProviderSubscriptionDescriptor>;
+  /** Delete local authority before best-effort remote revocation. */
+  disconnect(connectionId: string): Promise<ProviderSubscriptionDescriptor>;
 }

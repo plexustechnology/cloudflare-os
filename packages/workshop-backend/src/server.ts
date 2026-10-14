@@ -1,7 +1,8 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import type { ProviderConnectionsApi } from "@gadgets/workshop-shared/provider-connections-api";
+import type { ProviderConnectionsApi, ProviderSubscriptionConnectionsApi } from "@gadgets/workshop-shared/provider-connections-api";
 import { ProviderConnectionsApiImpl } from "./provider-connections.js";
+import { ProviderSubscriptionConnectionsApiImpl } from "./provider-subscriptions.js";
 import type { JWTPayload } from "jose";
 import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
@@ -600,6 +601,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (!await this.#user.providerConnectionsAvailable()) return null;
     // @ts-expect-error Cap'n Web targets are marshalled into stubs at the RPC boundary.
     return new ProviderConnectionsApiImpl(() => this.#user);
+  }
+
+  async getProviderSubscriptionConnectionsApi(): Promise<RpcStub<ProviderSubscriptionConnectionsApi> | null> {
+    if (!await this.#user.providerSubscriptionsAvailable()) return null;
+    // @ts-expect-error Cap'n Web marshals targets into stubs at the RPC boundary.
+    return new ProviderSubscriptionConnectionsApiImpl(() => this.#user, work => this.ctx.waitUntil(work));
   }
 
   // --- Deployment admin ---

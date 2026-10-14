@@ -30,6 +30,20 @@ export interface ProviderSubscriptionProfile {
   consent: ProviderSubscriptionConsent;
 }
 
+/** Saved authorization metadata; subscription inference remains unavailable. */
+export type ProviderSubscriptionDescriptor = Omit<ProviderConnectionDescriptor, "transport" | "consent" | "status" | "inferenceEnabled" | "lastSuccessfulInference"> &
+  ProviderSubscriptionProfile & {
+    /** Local authorization state, independent of provider eligibility. */
+    status: ProviderConnectionDescriptor["status"] | "plan-disabled";
+    /** Public client association; verified does not establish inference readiness. */
+    registration?: { /** Association state without provider identity. */ status: "none" | "provisional" | "verified";
+      /** Provider-issued public client identifier, when retained. */ clientId?: string };
+    /** Exact current correlation for explicit pending recovery only. */
+    pendingAuthorization?: { /** Server-generated intent. */ attemptId: string;
+      /** Pending callback or already issued exchange. */ phase: "pending" | "issued";
+      /** Original deadline in Unix milliseconds. */ expiresAt: number };
+  };
+
 /** Sanitized connection metadata; catalog or configured credentials never imply readiness. */
 export interface ProviderConnectionDescriptor {
   /** Server-generated opaque connection identifier; possession alone grants no authority. */
