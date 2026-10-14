@@ -1,3 +1,4 @@
+import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api"
 import type { RpcStub } from 'capnweb'
 import type { ProviderConnectionsApi, ProviderConnectionInput } from '@gadgets/workshop-shared/provider-connections-api'
 import type { ProviderConnectionDescriptor, ProviderConnectionCatalog } from '@gadgets/workshop-shared/provider-connections'
@@ -86,3 +87,7 @@ export const submitProviderCredential = (
 
 /** Personal profiles are minted by the server in this reserved namespace. */
 export const isPersonalProviderModel = (id: string): boolean => id.startsWith('provider-connection/')
+
+/** Display-only funding requires the server-reserved personal namespace. */
+export const personalProviderFunding = (profile: Pick<AiChatAuthorInfo, 'id' | 'funding'>): AiChatAuthorInfo['funding'] =>
+  isPersonalProviderModel(profile.id) ? profile.funding === 'chatgpt-plan' ? 'chatgpt-plan' : 'openai-platform-api' : undefined

@@ -19,6 +19,8 @@ const connection = { connectionId: 'fixture', label: 'My ChatGPT', consent: { bi
   acceptsProviderControlledOutput: true, acceptsSharedPlanAndCreditUsage: true }, provider: 'openai', transport: 'openai-chatgpt-responses',
   status: 'pending', credentialConfigured: true, generation: 2, credentialRevision: 2, createdAt: 0, updatedAt: 0, registration: { status: 'verified', clientId: 'oaiapp_fixture' } } as const
 class Controls extends RpcTarget implements ProviderSubscriptionConnectionsApi {
+  async discover(): Promise<never> { throw new Error("unused") }
+  async selectModel(): Promise<never> { throw new Error("unused") }
   async list() { return [connection] }
   async reserve() { return connection }
   async prepare(): Promise<RpcStub<ProviderSubscriptionAttempt>> { throw new Error('unused') }
@@ -58,16 +60,16 @@ describe('ChatGPT owner settings presentation', () => {
     await act(async () => resolve(scenario.kind === 'error' ? { kind: 'error', message: 'The outcome is unknown. Refresh status before starting a fresh sign-in.' }
       : { kind: scenario.kind, connection: { ...connection, credentialConfigured: scenario.prior } }))
     expect(document.body.textContent).toContain(scenario.kind === 'error' ? 'The outcome is unknown. Refresh status before starting a fresh sign-in.'
-      : scenario.kind === 'saved' ? 'Authorization saved. Inference setup is pending.' : scenario.prior
+      : scenario.kind === 'saved' ? 'Authorization saved. Choose a model explicitly when personal inference is enabled.' : scenario.prior
       ? 'Sign-in declined. Your prior saved authorization remains.' : 'Sign-in declined. No new authorization was saved.')
     expect(document.body.textContent).not.toContain('This sign-in was cancelled')
     expect(document.querySelector('input[type="password"]')?.getAttribute('value')).toBe('')
   })
-  it('saved association exposes public client and staged readiness without catalog/model controls', async () => {
+  it('saved association exposes public client and locally disabled inference without selectable models', async () => {
     api = new RpcStub<ProviderSubscriptionConnectionsApi>(new Controls()); document.body.append(container); root = createRoot(container)
     await act(async () => root!.render(<ProviderSubscriptionCard api={api!} connection={connection} onReconnect={() => {}} onChanged={async () => {}} />))
-    expect(document.body.textContent).toContain('oaiapp_fixture'); expect(document.body.textContent).toContain('Inference setup is pending')
-    expect(document.body.textContent).not.toMatch(/Use model|Refresh model catalog/)
+    expect(document.body.textContent).toContain('oaiapp_fixture'); expect(document.body.textContent).toContain('Personal inference is unavailable in this deployment')
+    expect(document.body.textContent).not.toContain('Choose model'); expect(document.body.textContent).toContain('Refresh model catalog')
     expect(document.querySelector('a[href="https://chatgpt.com/settings/usage"]')).not.toBeNull()
   })
 })

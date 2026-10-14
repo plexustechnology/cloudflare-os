@@ -18,6 +18,8 @@ class Attempt extends RpcTarget implements ProviderSubscriptionAttempt {
   [Symbol.dispose]() { this.disposed++ }
 }
 class Api extends RpcTarget implements ProviderSubscriptionConnectionsApi {
+  async discover(): Promise<never> { throw new Error("unused") }
+  async selectModel(): Promise<never> { throw new Error("unused") }
   attempt = new Attempt()
   async reserve(): Promise<ProviderSubscriptionDescriptor> { return connection }
   async prepare(): Promise<RpcStub<ProviderSubscriptionAttempt>> { return new RpcStub(this.attempt) }

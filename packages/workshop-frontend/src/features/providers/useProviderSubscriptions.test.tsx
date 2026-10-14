@@ -10,6 +10,8 @@ import { useProviderSubscriptions } from './useProviderSubscriptions'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 class Controls extends RpcTarget implements ProviderSubscriptionConnectionsApi {
+  async discover(): Promise<never> { throw new Error("unused") }
+  async selectModel(): Promise<never> { throw new Error("unused") }
   disposed = 0
   async list() { return [] }
   async reserve(): Promise<never> { throw new Error('unused') }

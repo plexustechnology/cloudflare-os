@@ -18,6 +18,8 @@ class Attempt extends RpcTarget implements ProviderSubscriptionAttempt {
   [Symbol.dispose]() { this.disposed++ }
 }
 class Api extends RpcTarget implements ProviderSubscriptionConnectionsApi {
+  async discover(): Promise<never> { throw new Error("unused") }
+  async selectModel(): Promise<never> { throw new Error("unused") }
   attempt = new Attempt()
   async reserve(): Promise<ProviderSubscriptionDescriptor> { return connection }
   async prepare(): Promise<RpcStub<ProviderSubscriptionAttempt>> { return new RpcStub(this.attempt) }
@@ -49,7 +51,7 @@ describe('independent QA subscription transport outcomes', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/health') ? { ready: true, port: 1455 } : {})))
     const target = new Api(); target.attempt.cancelCall.mockRejectedValue(new Error('SYNTHETIC_SECRET'))
     using api = new RpcStub(target)
-    const ready = vi.fn()
+    const ready = vi.fn<(handoff: ProviderSubscriptionHandoff, automatic: boolean) => void>()
     const flow = startSubscriptionConnection(api, input, undefined, 1455, 'p'.repeat(43), { onReady: ready, onCompleting: () => {} })
     await vi.waitFor(() => expect(ready).toHaveBeenCalled())
     await flow.cancel()
@@ -64,7 +66,7 @@ describe('independent QA subscription transport outcomes', () => {
   it('setup success followed by blocked polling enables manual without a second begin or setup', async () => {
     const requests: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string) => { requests.push(url); if (url.endsWith('/result')) throw Error('restricted'); return Response.json(url.endsWith('/health') ? { ready: true, port: 1455 } : { callbackState: 'waiting' }) }))
-    const target = new Api(); using api = new RpcStub(target); const ready = vi.fn()
+    const target = new Api(); using api = new RpcStub(target); const ready = vi.fn<(handoff: ProviderSubscriptionHandoff, automatic: boolean) => void>()
     const flow = startSubscriptionConnection(api, input, undefined, 1455, 'p'.repeat(43), { onReady: ready, onCompleting: () => {} })
     await vi.waitFor(() => expect(ready).toHaveBeenLastCalledWith(handoff, false))
     flow.submitManual('encrypted-recovery')
@@ -77,7 +79,7 @@ describe('independent QA subscription transport outcomes', () => {
   })
   it('confirmed cancellation during waiting fences once and sends no cloud complete', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/health') ? { ready: true, port: 1455 } : {})))
-    const target = new Api(); using api = new RpcStub(target); const ready = vi.fn()
+    const target = new Api(); using api = new RpcStub(target); const ready = vi.fn<(handoff: ProviderSubscriptionHandoff, automatic: boolean) => void>()
     const flow = startSubscriptionConnection(api, input, undefined, 1455, 'p'.repeat(43), { onReady: ready, onCompleting: () => {} })
     await vi.waitFor(() => expect(ready).toHaveBeenCalled())
     await Promise.all([flow.cancel(), flow.cancel()])

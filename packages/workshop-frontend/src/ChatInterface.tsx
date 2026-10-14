@@ -1,4 +1,4 @@
-import { isPersonalProviderModel } from "./features/providers/providerConnectionFlow";
+import { isPersonalProviderModel, personalProviderFunding } from "./features/providers/providerConnectionFlow";
 import { logRpcFailure } from "./rpcErrors";
 import {
   Fragment,
@@ -2627,7 +2627,7 @@ function ChatInterface({
   // Out-of-credits modal (free-tier limit reached). `usageModalShownFor` tracks the error sequence
   // we've already auto-opened for, so dismissing it doesn't immediately reopen.
   const [usageModalOpen, setUsageModalOpen] = useState(false);
-  const usageModalShownForRef = useRef<number | null>(null);
+  const usageModalShownForRef = useRef<string | null>(null);
   const [chatListScope, setChatListScope] = useState<ChatListScope>("all");
   const [chatListVersion, setChatListVersion] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -3010,9 +3010,10 @@ function ChatInterface({
       lastMessage &&
       lastMessage.type === "error" &&
       lastMessage.code === "usage_limit" &&
-      usageModalShownForRef.current !== lastMessage.sequence
+      !isPersonalProviderModel(lastMessage.author.id) &&
+      usageModalShownForRef.current !== `${lastMessage.chatId}:${lastMessage.sequence}:${lastMessage.author.funding ?? "deployment"}`
     ) {
-      usageModalShownForRef.current = lastMessage.sequence;
+      usageModalShownForRef.current = `${lastMessage.chatId}:${lastMessage.sequence}:${lastMessage.author.funding ?? "deployment"}`;
       setUsageModalOpen(true);
     }
   }, [lastMessage]);
@@ -5938,7 +5939,11 @@ function ChatInterface({
                                       </span>
                                     </Tooltip>
                                   </button>
-                                  {isLast && msg.code === "usage_limit" && (
+                                  {isLast && msg.code === "usage_limit" && personalProviderFunding(msg.author) === "chatgpt-plan" && (
+                                    <span className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-kumo-subtle"><span>This limit may apply to the app or your ChatGPT plan.</span><a className="inline-flex min-h-11 shrink-0 items-center text-sm font-medium text-kumo-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage usage</a></span>
+                                  )}
+                                  {isLast && msg.code === "usage_limit" && personalProviderFunding(msg.author) === "openai-platform-api" && <span className="text-xs text-kumo-subtle">Inspect your API connection.</span>}
+                                  {isLast && msg.code === "usage_limit" && !isPersonalProviderModel(msg.author.id) && (
                                     <Tooltip content="Add credits to continue." asChild>
                                       <button
                                         type="button"
@@ -6271,7 +6276,7 @@ function ChatInterface({
                     })()}
                   />
 
-                  {/* API spending is unknown locally, even when Pi technical catalog costs are zero. */}
+                  {/* Personal provider usage is unknown locally, including mixed-funding history. */}
                   <div className="-mt-1 flex min-h-[1.25rem] flex-wrap items-start justify-end gap-x-4 gap-y-1 px-4 pb-1 font-mono text-[11px] leading-4 text-kumo-inactive">
                     {currentChatMetadata?.totalTokens != null && (
                       <span>
@@ -6281,7 +6286,7 @@ function ChatInterface({
                     {currentChatMetadata?.totalCost != null && (
                       <span>{hasPersonalFunding ? "Cloudflare cost: " : ""}${currentChatMetadata.totalCost.toFixed(4)}</span>
                     )}
-                    {hasPersonalFunding && <span>OpenAI API cost unknown; billed by OpenAI</span>}
+                    {hasPersonalFunding && <span>Personal provider usage and cost unknown; managed by OpenAI</span>}
                   </div>
                 </div>
               </div>

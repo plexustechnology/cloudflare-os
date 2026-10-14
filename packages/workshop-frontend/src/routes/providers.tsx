@@ -18,7 +18,7 @@ import {
 import AddModelModal from '../AddModelModal'
 import { ProviderConnectionsSection } from '../features/providers/ProviderConnectionsSection'
 import { ProviderSubscriptionsSection } from '../features/providers/ProviderSubscriptionsSection'
-import { isPersonalProviderModel } from '../features/providers/providerConnectionFlow'
+import { isPersonalProviderModel, personalProviderFunding } from '../features/providers/providerConnectionFlow'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
 
@@ -60,7 +60,7 @@ function ModelRow({
           onSetQuick()
         }
       }}
-      title={personal ? 'Personal model — OpenAI API billing. Quick tasks are unavailable.' : isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
+      title={personal ? `Personal model — ${personalProviderFunding(model) === 'chatgpt-plan' ? 'ChatGPT plan and credits' : 'OpenAI API billing'}. Quick tasks are unavailable.` : isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
       className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint ${personal ? "" : "cursor-pointer"}`}
     >
       {/* Neutral monogram — matches the sidebar/workspaces treatment */}
@@ -148,8 +148,11 @@ function ProvidersPage() {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const loadEpoch = useRef(0)
+  const activeSource = useRef(authenticatedApi)
+  activeSource.current = authenticatedApi
 
   const fetchAll = async () => {
+    if (activeSource.current !== authenticatedApi) return
     const operation = ++loadEpoch.current
     setLoadError(false)
     try {
@@ -158,15 +161,15 @@ function ProvidersPage() {
         authenticatedApi.getQuickModel(),
         authenticatedApi.getAiConfig(),
       ])
-      if (operation !== loadEpoch.current) return
+      if (operation !== loadEpoch.current || activeSource.current !== authenticatedApi) return
       setModels(modelList)
       setQuickModel(qm)
       setAiConfig(cfg)
     } catch (err) {
       // Do not forward RPC diagnostics into browser reporting.
-      if (operation === loadEpoch.current) setLoadError(true)
+      if (operation === loadEpoch.current && activeSource.current === authenticatedApi) setLoadError(true)
     } finally {
-      if (operation === loadEpoch.current) setLoading(false)
+      if (operation === loadEpoch.current && activeSource.current === authenticatedApi) setLoading(false)
     }
   }
 
@@ -257,7 +260,7 @@ function ProvidersPage() {
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
         <ProviderConnectionsSection authenticatedApi={authenticatedApi} onModelAdded={fetchAll} />
-        <ProviderSubscriptionsSection authenticatedApi={authenticatedApi} />
+        <ProviderSubscriptionsSection authenticatedApi={authenticatedApi} onModelsChanged={fetchAll} />
         {/* Notices */}
         {(gatewayMode || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
@@ -280,7 +283,7 @@ function ProvidersPage() {
                   {quickModel
                     ? `${models.find((m) => m.id === quickModel)?.name ?? quickModel}.`
                     : 'none set.'}{' '}
-                  Used for fast tasks like generating chat titles. Click a model to set it. Personal API models are excluded.
+                  Used for fast tasks like generating chat titles. Click a model to set it. Personal connection models are excluded.
                 </span>
               </Notice>
             )}

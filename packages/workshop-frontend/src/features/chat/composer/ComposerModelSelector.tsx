@@ -1,6 +1,6 @@
 import { DropdownMenu } from "@cloudflare/kumo";
 import { CaretDown, Check } from "@phosphor-icons/react";
-import { isPersonalProviderModel } from "../../providers/providerConnectionFlow";
+import { isPersonalProviderModel, personalProviderFunding } from "../../providers/providerConnectionFlow";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 
 type ComposerModelSelectorProps = {
@@ -18,13 +18,15 @@ export const ComposerModelSelector = ({
     ? "No agent"
     : models.find((model) => model.id === selectedModel)?.name ?? selectedModel;
 
+  const selectedProfile = models.find(model => model.id === selectedModel);
   return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
     <DropdownMenu>
       <DropdownMenu.Trigger
         render={
           <button
             type="button"
-            className="group inline-flex h-10 min-w-0 max-w-[110px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[14px] leading-5 text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default sm:h-8 sm:max-w-[180px] sm:text-[13px]"
+            className="group inline-flex min-h-11 min-w-0 max-w-[110px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[14px] leading-5 text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default sm:max-w-[180px] sm:text-[13px]"
             aria-label={`Select model: ${selectedModelLabel}`}
             title={selectedModelLabel}
           >
@@ -48,7 +50,7 @@ export const ComposerModelSelector = ({
             >
               <span className="min-w-0 flex-1">
                 <span className={isPersonalProviderModel(model.id) ? "block break-words" : "block truncate"}>{model.name}</span>
-                {isPersonalProviderModel(model.id) && <span className="block text-[11px] text-kumo-inactive">OpenAI API billing</span>}
+                {isPersonalProviderModel(model.id) && <span className="block text-[11px] text-kumo-inactive">{personalProviderFunding(model) === "chatgpt-plan" ? "ChatGPT plan and credits" : "OpenAI API billing"}</span>}
               </span>
               {active && (
                 <Check
@@ -76,5 +78,10 @@ export const ComposerModelSelector = ({
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu>
+    {selectedProfile && personalProviderFunding(selectedProfile) === "chatgpt-plan" && <span className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-kumo-subtle">
+      <span title="Eligible requests use your ChatGPT plan and available credits.">Using ChatGPT plan</span>
+      <a className="inline-flex min-h-11 items-center text-kumo-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage usage</a>
+    </span>}
+    </div>
   );
 };

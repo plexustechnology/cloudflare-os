@@ -48,10 +48,10 @@ export const ProviderSubscriptionDialog = ({ api, connection, onClose, onChanged
     setPairing(''); setManual(''); setReady(undefined)
     if (outcome.kind === 'saved') {
       setPhase(outcome.connection.status === 'plan-disabled' ? 'plan-unavailable' : 'saved')
-      setMessage(outcome.connection.status === 'plan-disabled' ? 'Authorization saved. ChatGPT plan access was not granted. Inference setup is pending.' : 'Authorization saved. Inference setup is pending.')
+      setMessage(outcome.connection.status === 'plan-disabled' ? 'Authorization saved. ChatGPT plan access must be enabled before using it.' : 'Authorization saved. Choose a model explicitly when personal inference is enabled.')
     } else if (outcome.kind === 'declined') {
       setPhase('declined'); setMessage(outcome.connection.credentialConfigured
-        ? 'Sign-in declined. Your prior saved authorization remains. Inference setup is pending.'
+        ? 'Sign-in declined. Your prior saved authorization remains.'
         : 'Sign-in declined. No new authorization was saved.')
     } else if (outcome.kind === 'cancelled') {
       setPhase('cancelled'); setMessage(outcome.connection?.credentialConfigured && outcome.connection.generation > (connection?.generation ?? 1)
