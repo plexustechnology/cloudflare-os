@@ -17,6 +17,7 @@ import {
 } from '@phosphor-icons/react'
 import AddModelModal from '../AddModelModal'
 import { ProviderConnectionsSection } from '../features/providers/ProviderConnectionsSection'
+import { ProviderOwnerSetup } from '../features/providers/ProviderOwnerSetup'
 import { ProviderSubscriptionsSection } from '../features/providers/ProviderSubscriptionsSection'
 import { isPersonalProviderModel, personalProviderFunding } from '../features/providers/providerConnectionFlow'
 import { useDocumentTitle } from '../useDocumentTitle'
@@ -259,6 +260,7 @@ function ProvidersPage() {
       )}
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
+        <ProviderOwnerSetup authenticatedApi={authenticatedApi} />
         <ProviderConnectionsSection authenticatedApi={authenticatedApi} onModelAdded={fetchAll} />
         <ProviderSubscriptionsSection authenticatedApi={authenticatedApi} onModelsChanged={fetchAll} />
         {/* Notices */}
