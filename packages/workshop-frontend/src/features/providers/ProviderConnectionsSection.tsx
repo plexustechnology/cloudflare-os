@@ -20,7 +20,7 @@ export const ProviderConnectionsSection = ({ authenticatedApi, onModelAdded }: P
   }
   return <section aria-labelledby="personal-connections-heading" className="mx-3 mb-6 space-y-4">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-      <div className="min-w-0"><h2 id="personal-connections-heading" className="text-lg font-semibold text-kumo-default">Personal connections</h2><p className="mt-1 text-sm text-kumo-subtle">API costs are handled separately by OpenAI and are unknown locally. Cloudflare balances and usage describe Cloudflare funding.</p></div>
+      <div className="min-w-0"><h2 id="personal-connections-heading" className="text-lg font-semibold text-kumo-default">OpenAI API connections</h2><p className="mt-1 text-sm text-kumo-subtle">API costs are handled separately by OpenAI and are unknown locally. Cloudflare balances and usage describe Cloudflare funding.</p></div>
       <Button variant="primary" className="min-h-11 shrink-0" onClick={() => setDialog({ api })}>Connect OpenAI API</Button>
     </div>
     {loading && <p aria-live="polite" className="text-sm text-kumo-subtle">Loading connections…</p>}

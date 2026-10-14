@@ -69,7 +69,6 @@ export const ProviderCredentialDialog = ({ api, connection, onClose, onSaved, on
           {connection ? 'Reconnect OpenAI API' : 'Connect OpenAI API'}
         </Dialog.Title>
         <p className="mt-3 text-sm text-kumo-subtle">OpenAI API usage is billed separately by OpenAI. A ChatGPT subscription does not cover API costs. Costs and remaining API balance are unknown here.</p>
-        <p className="mt-3 text-sm text-kumo-subtle">ChatGPT subscription access is unavailable in this deployment.</p>
         {connection && <p className="mt-3 rounded-lg bg-kumo-tint p-3 text-sm text-kumo-default">Replacing the key stops running work and requires choosing your model again. Cancellation disables this connection locally.</p>}
         <form className="mt-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
           <Input className="min-h-11" label="Connection label" value={label} maxLength={80} disabled={busy}
