@@ -8,6 +8,28 @@ export interface ProviderConnectionConsent {
   sessionCompaction: boolean;
 }
 
+/** Explicit funding, purpose and cost-limit consent for the protected subscription profile. */
+export interface ProviderSubscriptionConsent {
+  /** The owner selects ChatGPT plan and credit usage permitted by provider settings. */
+  billing: "chatgpt-plan";
+  /** Only the authenticated owner's interactive turns may use this connection. */
+  ownerInteractive: true;
+  /** Whether same-session compaction may use this funding. */
+  sessionCompaction: boolean;
+  /** Provider generation/cost may precede Plexus rejecting output above its acceptance limit. */
+  acceptsProviderControlledOutput: true;
+  /** Shared allowance/credits may be consumed; this does not authorize purchases or top-ups. */
+  acceptsSharedPlanAndCreditUsage: true;
+}
+
+/** Paired subscription transport and consent; no API funding substitution is permitted. */
+export interface ProviderSubscriptionProfile {
+  /** Protected direct subscription Responses transport, independently of API inference. */
+  transport: "openai-chatgpt-responses";
+  /** Explicit subscription funding and purpose consent. */
+  consent: ProviderSubscriptionConsent;
+}
+
 /** Sanitized connection metadata; catalog or configured credentials never imply readiness. */
 export interface ProviderConnectionDescriptor {
   /** Server-generated opaque connection identifier; possession alone grants no authority. */
