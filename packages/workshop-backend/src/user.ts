@@ -195,6 +195,8 @@ function makeUserStorage(storage: DurableObjectStorage) {
     singletons: {
       // Sanitized owner slots reserved before uncertain private credential writes.
       providerConnections: [] as ProviderConnectionReservation[],
+      // Presentation bookkeeping only; no grant or inference authority.
+      planWelcomeOffered: false,
       // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
       // null until a Cloudflare account is connected and resolved.
       cloudflareBilling: <CloudflareBilling | null>null,
@@ -338,6 +340,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.aiModels.put({ profile, config: { provider: "provider-connection", connectionId, model,
       generation: selected.generation, transport: selected.transport, billing: selected.consent.billing } });
     return profile;
+  }
+
+  /** Discover current subscription metadata and scoped choices without inference. */
+  discoverProviderSubscriptionModels(connectionId: string) {
+    return this.#providerConnections.discoverSubscription(connectionId);
+  }
+
+  /** Mint a token-free plan profile; atomically claim the owner notification after selection. */
+  async selectProviderSubscriptionModel(connectionId: string, generation: number, revision: number, model: string) {
+    const selected = await this.#providerConnections.subscriptionSelection(connectionId, generation, revision, model);
+    const profile: AiChatAuthorInfo = { type: "agent", id: `provider-connection/${connectionId}/${encodeURIComponent(model)}`,
+      name: `${selected.name} (${selected.connection.label} · ChatGPT plan)`, funding: "chatgpt-plan" };
+    this.storage.aiModels.put({ profile, config: { provider: "provider-connection", connectionId, model,
+      generation: selected.connection.generation, transport: "openai-chatgpt-responses", billing: "chatgpt-plan" } });
+    const showPlanWelcome = !this.storage.planWelcomeOffered.get();
+    if (showPlanWelcome) this.storage.planWelcomeOffered.put(true);
+    return { profile, showPlanWelcome };
   }
 
   /** Replaces an indexed connection with a generation-checked owner action. */
@@ -634,6 +653,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+    if (profile.funding !== undefined) throw new Error("connection_forbidden");
     if (config.provider === "provider-connection" || profile.id.startsWith("provider-connection/")) {
       throw new Error("Personal models require explicit provider connection selection.");
     }

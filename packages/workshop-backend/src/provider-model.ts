@@ -32,7 +32,8 @@ function failed(model: Model<"openai-responses">, code: ProviderInferenceErrorCo
 
 /** Fixed private native Responses handle; provider credentials never enter the kernel. */
 export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnectionModelConfig, authority: ProviderModelAuthority): ModelHandle {
-  const scope = `provider-connection/${config.connectionId}/${config.generation}`;
+  const apiScope = `provider-connection/${config.connectionId}/${config.generation}`;
+  const scope = config.transport === "openai-api-responses" ? apiScope : `${apiScope}/${config.transport}/${config.billing}`;
   const model: Model<"openai-responses"> = {
     id: config.model, name: config.model, api: "openai-responses", provider: scope,
     baseUrl: "https://provider-adapter.internal/v1", reasoning: true, input: ["text", "image"],
@@ -140,7 +141,8 @@ export function getProviderConnectionModel(env: Cloudflare.Env, config: AiConnec
           const envelope: ProviderInferenceRequest = { version: 1, requestId: crypto.randomUUID(), expiresAt,
             ownerId: authority.ownerId, requesterUserId: authority.requesterUserId, workspaceOwnerId: authority.workspaceOwnerId,
             session: authority.session, connectionId: config.connectionId, generation: config.generation,
-            transport: config.transport, billing: config.billing, model: config.model, purpose, payload: await request.json() };
+            ...(config.transport === "openai-api-responses" ? { transport: config.transport, billing: config.billing } :
+              { transport: config.transport, billing: config.billing }), model: config.model, purpose, payload: await request.json() };
           if (settled) throw new Error("cancelled");
           cancelRequest = { version: envelope.version, requestId: envelope.requestId, expiresAt,
             ownerId: envelope.ownerId, requesterUserId: envelope.requesterUserId, workspaceOwnerId: envelope.workspaceOwnerId,

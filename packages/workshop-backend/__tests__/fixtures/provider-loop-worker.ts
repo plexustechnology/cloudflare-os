@@ -26,7 +26,7 @@ export class OverseerDurableObject extends ProductionOverseerDurableObject {
     const impl = Reflect.get(this, "impl");
     // Restore the same native fixture capabilities on every real actor incarnation.
     impl.users = Reflect.get(env, "TestProviderUser");
-    impl.env = { ...env, AI_PROVIDER_ADAPTER: Reflect.get(ctx.exports, "QaInferenceDispatcher")({ props: {} }) };
+    impl.env = { ...env, AI_PROVIDER_ADAPTER: env.AI_PROVIDER_ADAPTER ?? Reflect.get(ctx.exports, "QaInferenceDispatcher")({ props: {} }) };
   }
   /** A fresh UUID proves the native constructor ran again, rather than reconstructing its impl. */
   getTestIncarnation(): string { return this.#incarnation; }

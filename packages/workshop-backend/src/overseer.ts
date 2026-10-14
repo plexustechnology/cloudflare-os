@@ -5791,12 +5791,13 @@ class OverseerImpl implements AgentHooks {
       const context = await user.getChatContext(current.modelId);
       const selected = context.aiModel?.config;
       if (selected?.provider !== "provider-connection" || selected.connectionId !== config.connectionId ||
-          selected.generation !== config.generation || selected.model !== config.model ||
-          current.personalTurn.config.generation !== config.generation || current.personalTurn.config.connectionId !== config.connectionId) {
+          selected.generation !== config.generation || selected.model !== config.model || selected.transport !== config.transport || selected.billing !== config.billing ||
+          current.personalTurn.config.generation !== config.generation || current.personalTurn.config.connectionId !== config.connectionId ||
+          current.personalTurn.config.model !== config.model || current.personalTurn.config.transport !== config.transport || current.personalTurn.config.billing !== config.billing) {
         throw new Error("reconnect_required");
       }
-      const connection = await user.getProviderConnectionStatus(config.connectionId);
-      if (connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
+      const connection = config.billing === "chatgpt-plan" ? await user.getProviderSubscriptionStatus(config.connectionId) : await user.getProviderConnectionStatus(config.connectionId);
+      if (connection.transport !== config.transport || connection.consent.billing !== config.billing || connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
       if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
       if (!connection.consent.ownerInteractive || purpose === "sessionCompaction" && !connection.consent.sessionCompaction ||
           (await this.getSharingManager()).hasAnyShares()) throw new Error("connection_forbidden");
@@ -9995,9 +9996,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (userMeta.aiModel.config.provider === "provider-connection") {
       const config = userMeta.aiModel.config;
       if (!personal || personal.config.connectionId !== config.connectionId || personal.config.generation !== config.generation ||
-          personal.config.model !== config.model) throw new Error("reconnect_required");
-      const connection = await this.#clientUser.getProviderConnectionStatus(config.connectionId);
-      if (connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
+          personal.config.model !== config.model || personal.config.transport !== config.transport || personal.config.billing !== config.billing) throw new Error("reconnect_required");
+      const connection = config.billing === "chatgpt-plan" ? await this.#clientUser.getProviderSubscriptionStatus(config.connectionId) : await this.#clientUser.getProviderConnectionStatus(config.connectionId);
+      if (connection.transport !== config.transport || connection.consent.billing !== config.billing || connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
       if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
     } else if (personal) throw new Error("connection_forbidden");
 
@@ -10026,8 +10027,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (turn.initiatorUserId !== this.#clientUser.id.toString() || turn.initiatorUserId !== this.impl.ownerId ||
         (turn.state !== "running" && turn.state !== "suspended") || (await this.impl.getSharingManager()).hasAnyShares()) throw new Error("connection_forbidden");
     const selected = (await this.#clientUser.getChatContext(`provider-connection/${turn.config.connectionId}/${encodeURIComponent(turn.config.model)}`)).aiModel?.config;
-    const connection = await this.#clientUser.getProviderConnectionStatus(turn.config.connectionId);
-    if (selected?.provider !== "provider-connection" || selected.generation !== turn.config.generation ||
+    const connection = turn.config.billing === "chatgpt-plan" ? await this.#clientUser.getProviderSubscriptionStatus(turn.config.connectionId) : await this.#clientUser.getProviderConnectionStatus(turn.config.connectionId);
+    if (selected?.provider !== "provider-connection" || selected.generation !== turn.config.generation || selected.connectionId !== turn.config.connectionId ||
+        selected.model !== turn.config.model || selected.transport !== turn.config.transport || selected.billing !== turn.config.billing ||
+        connection.transport !== turn.config.transport || connection.consent.billing !== turn.config.billing ||
         connection.generation !== turn.config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
     if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
     if (this.impl.ownerId !== turn.initiatorUserId || this.impl.storage.personalTurns.get(chatId)?.turnId !== turn.turnId ||

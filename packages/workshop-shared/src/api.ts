@@ -1201,7 +1201,7 @@ export type AiLegacyModelConfig = {
 };
 
 /** Token-free personal model, constructed only by authenticated owner selection. */
-export type AiConnectionModelConfig = {
+export type AiConnectionModelConfig = import("./provider-inference.js").ProviderFundingProfile & {
   /** Discriminator separating personal infrastructure authority from legacy credentials. */
   provider: "provider-connection";
   /** Owner-indexed opaque connection identifier. */
@@ -1210,10 +1210,6 @@ export type AiConnectionModelConfig = {
   model: string;
   /** Authority generation captured by selection; reconnect requires reselection. */
   generation: number;
-  /** Fixed initial native transport. */
-  transport: "openai-api-responses";
-  /** Explicit owner-selected funding mode. */
-  billing: "openai-platform-api";
 };
 
 /** Model configuration retaining legacy records alongside token-free personal selections. */
@@ -2598,6 +2594,9 @@ export type AiChatAuthorInfo = {
 
   /** Display name for author, e.g. "Kenton Varda" or "GPT" */
   name: string;
+
+  /** Server-minted personal funding display metadata; never inference authority. */
+  funding?: "openai-platform-api" | "chatgpt-plan";
 
   // Note: the avatar is intentionally not included here to keep this type lightweight (it's
   // embedded in every chat message). Fetch user avatars separately via

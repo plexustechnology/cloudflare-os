@@ -73,8 +73,28 @@ export interface ProviderSubscriptionAttempt extends RpcTarget {
   cancel(): Promise<ProviderSubscriptionDescriptor>;
 }
 
+/** Current scoped catalog and matching sanitized credential revision. */
+export interface ProviderSubscriptionDiscovery {
+  /** Current captured subscription authority. */
+  connection: ProviderSubscriptionDescriptor;
+  /** Bounded choices; presence never proves eligibility. */
+  catalog: ProviderConnectionCatalog;
+}
+
+/** Explicit model selection with owner-scoped presentation bookkeeping. */
+export interface ProviderSubscriptionSelection {
+  /** Server-minted token-free model profile. */
+  profile: AiChatAuthorInfo;
+  /** True once when the owner is offered the plan welcome. */
+  showPlanWelcome: boolean;
+}
+
 /** Authenticated subscription management, distinct from API billing and inference controls. */
 export interface ProviderSubscriptionConnectionsApi extends RpcTarget {
+  /** Discover current grant-scoped choices without inference or automatic model selection. */
+  discover(connectionId: string): Promise<ProviderSubscriptionDiscovery>;
+  /** Explicitly select a choice under the exact current generation and credential revision. */
+  selectModel(connectionId: string, expectedGeneration: number, expectedCredentialRevision: number, model: string): Promise<ProviderSubscriptionSelection>;
   /** List this owner's bounded subscription slots. */
   list(): Promise<ProviderSubscriptionDescriptor[]>;
   /** Reserve credential-free identity before helper setup. */

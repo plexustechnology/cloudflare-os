@@ -30,8 +30,8 @@ export interface ProviderSubscriptionProfile {
   consent: ProviderSubscriptionConsent;
 }
 
-/** Saved authorization metadata; subscription inference remains unavailable. */
-export type ProviderSubscriptionDescriptor = Omit<ProviderConnectionDescriptor, "transport" | "consent" | "status" | "inferenceEnabled" | "lastSuccessfulInference"> &
+/** Sanitized subscription authorization and local inference metadata. */
+export type ProviderSubscriptionDescriptor = Omit<ProviderConnectionDescriptor, "transport" | "consent" | "status"> &
   ProviderSubscriptionProfile & {
     /** Local authorization state, independent of provider eligibility. */
     status: ProviderConnectionDescriptor["status"] | "plan-disabled";
@@ -111,5 +111,5 @@ export interface ProviderConnectionCatalog {
   /** Successful fetch time in Unix milliseconds, null when no catalog has been obtained. */
   fetchedAt: number | null;
   /** Bounded failure category without any upstream message, header or body. */
-  error?: "provider_unavailable" | "rate_limited" | "reconnect_required";
+  error?: "provider_unavailable" | "rate_limited" | "reconnect_required" | "usage_limit" | "connection_forbidden" | "unsupported_feature";
 }

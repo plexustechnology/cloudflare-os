@@ -1,7 +1,7 @@
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { ProviderConnectionDescriptor, ProviderConnectionCatalog, ProviderConnectionModel, ProviderSubscriptionDescriptor, ProviderSubscriptionConsent } from "@gadgets/workshop-shared/provider-connections";
-import type { ProviderConnectionInput, ProviderConnectionsApi, ProviderSubscriptionInput, ProviderSubscriptionHandoff, ProviderSubscriptionCompletion } from "@gadgets/workshop-shared/provider-connections-api";
+import type { ProviderConnectionInput, ProviderConnectionsApi, ProviderSubscriptionInput, ProviderSubscriptionHandoff, ProviderSubscriptionCompletion, ProviderSubscriptionDiscovery } from "@gadgets/workshop-shared/provider-connections-api";
 import type { UserDurableObject } from "./user.js";
 import type { Singleton } from "@gadgets/typed-storage";
 
@@ -9,7 +9,7 @@ const MAX_CONNECTIONS = 32;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ERROR_STATUS: Record<string, number> = { adapter_disabled: 503, connection_forbidden: 403,
   invalid_request: 400, connection_required: 404, reconnect_required: 409,
-  provider_unavailable: 503, unsupported_feature: 400, rate_limited: 429 };
+  provider_unavailable: 503, unsupported_feature: 400, rate_limited: 429, usage_limit: 429 };
 const ERROR_CODES = new Set(Object.keys(ERROR_STATUS));
 /** Sanitized owner index reservation; never includes credentials or authority-bearing stubs. */
 export type ProviderConnectionReservation = Pick<ProviderConnectionDescriptor, "connectionId" | "label" | "createdAt"> & { consent: ProviderConnectionDescriptor["consent"] | ProviderSubscriptionConsent };
@@ -50,7 +50,8 @@ function subscriptionDescriptor(value: unknown, connectionId: string): ProviderS
       value.provider !== "openai" || value.transport !== "openai-chatgpt-responses" ||
       typeof value.status !== "string" || !["pending", "disabled", "reconnect-required", "plan-disabled"].includes(value.status) ||
       typeof value.credentialConfigured !== "boolean" || !counter(value.generation) || value.generation < 1 ||
-      !counter(value.credentialRevision) || value.credentialRevision < 1 || !counter(value.createdAt) || !counter(value.updatedAt) || value.updatedAt < value.createdAt) failure();
+      !counter(value.credentialRevision) || value.credentialRevision < 1 || !counter(value.createdAt) || !counter(value.updatedAt) || value.updatedAt < value.createdAt ||
+      value.inferenceEnabled !== undefined && typeof value.inferenceEnabled !== "boolean") failure();
   let registration: ProviderSubscriptionDescriptor["registration"];
   if (value.registration !== undefined) {
     const r = value.registration;
@@ -69,7 +70,9 @@ function subscriptionDescriptor(value: unknown, connectionId: string): ProviderS
   return { connectionId, label: value.label, consent: { ...value.consent }, provider: "openai", transport: "openai-chatgpt-responses",
     status: value.status as ProviderSubscriptionDescriptor["status"], credentialConfigured: value.credentialConfigured,
     generation: value.generation, credentialRevision: value.credentialRevision, createdAt: value.createdAt, updatedAt: value.updatedAt,
-    ...(registration ? { registration } : {}), ...(pending ? { pendingAuthorization: pending } : {}) };
+    ...(registration ? { registration } : {}), ...(pending ? { pendingAuthorization: pending } : {}),
+    ...(value.inferenceEnabled === undefined ? {} : { inferenceEnabled: value.inferenceEnabled as boolean }),
+    ...inferenceMetadata(value) };
 }
 function intake(input: ProviderConnectionInput): ProviderConnectionInput {
   // Structural RPC checks are generated; semantic limits also guard the native UserDO boundary.
@@ -80,6 +83,17 @@ function intake(input: ProviderConnectionInput): ProviderConnectionInput {
     sessionCompaction: input.consent.sessionCompaction,
   } };
 }
+function inferenceMetadata(value: Record<string, unknown>): Pick<ProviderConnectionDescriptor, "lastSuccessfulInference"> {
+  let success: ProviderConnectionDescriptor["lastSuccessfulInference"];
+  if (value.lastSuccessfulInference !== undefined) {
+    const s = value.lastSuccessfulInference;
+    if (!object(s) || !keys(s, ["model", "generation", "completedAt"]) ||
+        typeof s.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(s.model) ||
+        s.generation !== value.generation || !counter(s.completedAt) || s.completedAt < 1 || s.completedAt > Date.now()) failure();
+    success = { model: s.model, generation: value.generation as number, completedAt: s.completedAt };
+  }
+  return success ? { lastSuccessfulInference: success } : {};
+}
 function descriptor(value: unknown, connectionId: string): ProviderConnectionDescriptor {
   if (!object(value) || value.connectionId !== connectionId || !label(value.label) || !consent(value.consent) ||
       value.provider !== "openai" || value.transport !== "openai-api-responses" ||
@@ -88,14 +102,7 @@ function descriptor(value: unknown, connectionId: string): ProviderConnectionDes
       !counter(value.credentialRevision) || value.generation < 1 || value.credentialRevision < 1 ||
       !counter(value.createdAt) || !counter(value.updatedAt) || value.updatedAt < value.createdAt ||
       (value.inferenceEnabled !== undefined && typeof value.inferenceEnabled !== "boolean")) failure();
-  let success: ProviderConnectionDescriptor["lastSuccessfulInference"];
-  if (value.lastSuccessfulInference !== undefined) {
-    const s = value.lastSuccessfulInference;
-    if (!object(s) || !keys(s, ["model", "generation", "completedAt"]) ||
-        typeof s.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(s.model) ||
-        s.generation !== value.generation || !counter(s.completedAt) || s.completedAt < 1 || s.completedAt > Date.now()) failure();
-    success = { model: s.model, generation: value.generation, completedAt: s.completedAt };
-  }
+  const success = inferenceMetadata(value).lastSuccessfulInference;
   return { connectionId, label: value.label, provider: "openai", transport: "openai-api-responses",
     consent: { billing: "openai-platform-api", ownerInteractive: true, sessionCompaction: value.consent.sessionCompaction },
     status: value.status as ProviderConnectionDescriptor["status"], credentialConfigured: value.credentialConfigured,
@@ -105,20 +112,21 @@ function descriptor(value: unknown, connectionId: string): ProviderConnectionDes
     ...(success ? { lastSuccessfulInference: success } : {}) };
 }
 
-function catalog(value: unknown, connectionId: string): ProviderConnectionCatalog {
+function catalog(value: unknown, connectionId: string, subscription = false): ProviderConnectionCatalog {
   if (!object(value) || typeof value.status !== "string" || !["fresh", "stale", "unknown"].includes(value.status) ||
       !Array.isArray(value.models) || value.models.length > 64 ||
       (value.fetchedAt !== null && !counter(value.fetchedAt)) ||
       (value.error !== undefined && (typeof value.error !== "string" ||
-        !["provider_unavailable", "rate_limited", "reconnect_required"].includes(value.error)))) failure();
+        !(subscription ? ["provider_unavailable", "rate_limited", "reconnect_required", "usage_limit", "connection_forbidden", "unsupported_feature"] : ["provider_unavailable", "rate_limited", "reconnect_required"]).includes(value.error)))) failure();
   const models: ProviderConnectionModel[] = value.models.map(model => {
     if (!object(model) || typeof model.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(model.model) ||
-        model.name !== model.model || model.id !== `provider-connection/${connectionId}/${encodeURIComponent(model.model)}` ||
+        (subscription ? typeof model.name !== "string" || !model.name.length || model.name.length > 256 ||
+          new TextEncoder().encode(model.name).byteLength > 1024 || Array.from(model.name).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) : model.name !== model.model) || model.id !== `provider-connection/${connectionId}/${encodeURIComponent(model.model)}` ||
         typeof model.id !== "string" || model.id.length > 450 || !object(model.capabilities) ||
         !keys(model.capabilities, ["contextWindow", "maxOutputTokens", "images", "reasoning"]) ||
         model.capabilities.contextWindow !== null || model.capabilities.maxOutputTokens !== null ||
         model.capabilities.images !== "unknown" || model.capabilities.reasoning !== "unknown") failure();
-    return { id: model.id, model: model.model, name: model.model,
+    return { id: model.id, model: model.model, name: model.name as string,
       capabilities: { contextWindow: null, maxOutputTokens: null, images: "unknown", reasoning: "unknown" } };
   });
   if (new Set(models.map(model => model.id)).size !== models.length ||
@@ -264,6 +272,36 @@ export class ProviderConnectionIndex {
     if (fresh.generation !== expectedGeneration || fresh.status !== "pending" || !fresh.credentialConfigured) failure("reconnect_required");
     if (fresh.inferenceEnabled !== true) failure("adapter_disabled");
     return fresh;
+  }
+
+  /** Publish choices and revision from the same captured subscription authority. */
+  async discoverSubscription(connectionId: string): Promise<ProviderSubscriptionDiscovery> {
+    this.#owned(connectionId, "chatgpt-plan");
+    const result = await this.#request({ action: "subscription-discover", connectionId }, 35000);
+    return { connection: subscriptionDescriptor(result.connection, connectionId), catalog: catalog(result.catalog, connectionId, true) };
+  }
+
+  /** Selection requires exact revision and fresh scoped choices, without any inference. */
+  async subscriptionSelection(connectionId: string, generation: number, revision: number, model: string): Promise<{ connection: ProviderSubscriptionDescriptor; name: string }> {
+    this.#owned(connectionId, "chatgpt-plan");
+    if (!counter(generation) || generation < 1 || !counter(revision) || revision < 1 ||
+        typeof model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(model)) failure("invalid_request");
+    const check = (connection: ProviderSubscriptionDescriptor) => {
+      if (connection.generation !== generation || connection.credentialRevision !== revision || connection.status !== "pending" ||
+          !connection.credentialConfigured || connection.pendingAuthorization || connection.registration?.status !== "verified") failure("reconnect_required");
+      if (connection.inferenceEnabled !== true) failure("adapter_disabled");
+    };
+    check(await this.subscriptionStatus(connectionId));
+    const choices = await this.discoverSubscription(connectionId);
+    check(choices.connection);
+    const selected = choices.catalog.models.find(choice => choice.model === model);
+    if (choices.catalog.status !== "fresh" || !selected) failure("invalid_request");
+    const current = await this.subscriptionStatus(connectionId);
+    check(current);
+    const fetchedAt = choices.catalog.fetchedAt;
+    const now = Date.now();
+    if (fetchedAt === null || !counter(fetchedAt) || fetchedAt < 1 || fetchedAt > now || now - fetchedAt >= 300000) failure("invalid_request");
+    return { connection: current, name: selected.name };
   }
 
   /** Explicit generation-zero recovery creates only after a confirmed absent adapter record. */

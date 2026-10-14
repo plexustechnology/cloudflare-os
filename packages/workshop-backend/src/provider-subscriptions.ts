@@ -62,6 +62,12 @@ export class ProviderSubscriptionConnectionsApiImpl extends RpcTarget implements
   #getUser: () => DurableObjectStub<UserDurableObject>;
   #schedule: (work: Promise<unknown>) => void;
   constructor(getUser: () => DurableObjectStub<UserDurableObject>, schedule: (work: Promise<unknown>) => void) { super(); this.#getUser = getUser; this.#schedule = schedule; }
+  /** Return current subscription metadata and bounded choices. */
+  discover(connectionId: string) { return this.#getUser().discoverProviderSubscriptionModels(connectionId); }
+  /** Explicit revision-checked selection; this never starts inference. */
+  selectModel(connectionId: string, expectedGeneration: number, expectedCredentialRevision: number, model: string) {
+    return this.#getUser().selectProviderSubscriptionModel(connectionId, expectedGeneration, expectedCredentialRevision, model);
+  }
   /** List sanitized owner subscription slots. */
   list(): Promise<ProviderSubscriptionDescriptor[]> { return this.#getUser().listProviderSubscriptions(); }
   /** Reserve a credential-free subscription slot. */

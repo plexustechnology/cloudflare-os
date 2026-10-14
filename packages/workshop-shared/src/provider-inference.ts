@@ -10,7 +10,7 @@ export const PROVIDER_INFERENCE_CLEANUP_GRACE_MS = 1000;
 export const PROVIDER_INFERENCE_PROTOCOL = "responses-v1";
 /** Local planning budget, not a provider capability or entitlement claim. */
 export const PROVIDER_CONNECTION_PLANNING_WINDOW = 32768;
-/** Local response reservation enforced for the initial personal route. */
+/** Local completed-output acceptance reservation; subscription generation and charges are uncapped. */
 export const PROVIDER_CONNECTION_OUTPUT_LIMIT = 4096;
 
 /** Owner-approved purposes; background and gadget inference have no personal authority. */
@@ -26,8 +26,21 @@ export interface ProviderInferenceSession {
   turnId: string;
 }
 
+/** Exact transport/funding pair; mixed profiles never convey authority. */
+export type ProviderFundingProfile = {
+  /** Fixed public API Responses transport. */
+  transport: "openai-api-responses";
+  /** Explicit Platform API billing. */
+  billing: "openai-platform-api";
+} | {
+  /** Protected subscription Responses transport. */
+  transport: "openai-chatgpt-responses";
+  /** Explicit ChatGPT plan/credit funding. */
+  billing: "chatgpt-plan";
+};
+
 /** Exact private request; the credential Worker validates its unknown native payload. */
-export interface ProviderInferenceRequest {
+export type ProviderInferenceRequest = ProviderFundingProfile & {
   /** Version of this private envelope. */
   version: 1;
   /** Fresh backend UUID4 for one inference; never proof of billing idempotency. */
@@ -44,10 +57,6 @@ export interface ProviderInferenceRequest {
   connectionId: string;
   /** Authority generation captured by explicit model selection. */
   generation: number;
-  /** Fixed initial native transport. */
-  transport: "openai-api-responses";
-  /** Explicit initial funding mode. */
-  billing: "openai-platform-api";
   /** Deployment-allowlisted provider model slug. */
   model: string;
   /** Authorized owner session purpose. */
@@ -56,7 +65,7 @@ export interface ProviderInferenceRequest {
   session: ProviderInferenceSession;
   /** Pinned Pi native Responses body; runtime validated before upstream I/O. */
   payload: unknown;
-}
+};
 
 /** Fixed safe inference categories; raw provider diagnostics never cross the boundary. */
 export type ProviderInferenceErrorCode = "connection_required" | "reconnect_required" |

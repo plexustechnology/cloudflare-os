@@ -136,6 +136,24 @@ describe("locked personal Responses handle", () => {
     expect(f.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps API provenance stable while subscription funding has distinct opaque-history authority", async () => {
+    const plan: AiConnectionModelConfig = { ...config, transport: "openai-chatgpt-responses", billing: "chatgpt-plan" };
+    const first = fixture(toolFrames());
+    const handle = getProviderConnectionModel(first.env, plan, authority());
+    const message = await handle.stream(handle.model, context).result();
+    expect(message.provider).toBe(`provider-connection/${config.connectionId}/1/openai-chatgpt-responses/chatgpt-plan`);
+    expect(first.captured[0]).toMatchObject({ transport: "openai-chatgpt-responses", billing: "chatgpt-plan" });
+    const replay: Context = { ...context, messages: [...context.messages, message,
+      { role: "toolResult", toolCallId: "call_fixture|fc_fixture", toolName: "syntheticTool", content: [{ type: "text", text: "Fixture result" }], isError: false, timestamp: 2 }] };
+    for (const selected of [plan, config]) {
+      const next = fixture();
+      const model = getProviderConnectionModel(next.env, selected, authority());
+      await model.stream(model.model, replay).result();
+      expect(JSON.stringify(next.captured[0].payload).includes("fixture-opaque")).toBe(selected.billing === "chatgpt-plan");
+      if (selected.billing === "openai-platform-api") expect(model.model.provider).toBe(`provider-connection/${config.connectionId}/1`);
+    }
+  });
+
   it("fails closed on protocol, EOF and safe HTTP errors without retry or diagnostic leakage", async () => {
     for (const reply of [response(textFrames(), "unknown"), response(textFrames().slice(0, -1)),
       Response.json({ error: { code: "rate_limited", message: "PRIVATE_BODY" } }, { status: 429 })]) {
