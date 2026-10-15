@@ -58,8 +58,12 @@ async function fixture(replies: (Record<string, unknown>[] | null)[], withGateke
       bindings = { TEST_RESOURCE: await gatekeeper.getId() };
     }
     impl.storage.chatContext.put({ chatId: 0, bindings, alwaysAvailableCapsuleIds: [] });
-    impl.storage.chatMeta.put({ id: 0, title: "QA loop", started: new Date(), lastActive: new Date(), activeAgent: context.aiModel!.profile });
-    impl.addChatMessages(0, context.profile, [{ type: "message", message: "Synthetic owner request" }]);
+    const timestamp = new Date();
+    impl.storage.chatMeta.put({ id: 0, title: "QA loop", started: timestamp, lastActive: timestamp });
+    // Seed idle history directly: addChatMessages() updates last-active twice and can schedule
+    // a minute-long coalescing timer when those timestamps cross a millisecond boundary.
+    impl.storage.chats.put({ chatId: 0, sequence: impl.nextChatSequence(0), timestamp,
+      author: context.profile, type: "message", message: "Synthetic owner request" });
   });
   const snapshot = async () => JSON.parse(await env.QaConnectionStorage.getByName(connection.connectionId).snapshot()) as QaInferenceSnapshot;
   return { owner, workspace, context, snapshot, profileId, connectionId: connection.connectionId };
@@ -68,6 +72,9 @@ async function fixture(replies: (Record<string, unknown>[] | null)[], withGateke
 async function start(f: Awaited<ReturnType<typeof fixture>>) {
   await runInDurableObject(f.workspace, async instance => {
     const impl = Reflect.get(instance, "impl");
+    const meta = impl.storage.chatMeta.get(0);
+    meta.activeAgent = f.context.aiModel!.profile;
+    impl.storage.chatMeta.put(meta);
     impl.startAgent(0, f.context.aiModel, f.context.profile, f.owner.id.toString());
     await impl.waitForAllAgentsToComplete();
     expect((await f.snapshot()).errors).toEqual([]);
@@ -139,10 +146,20 @@ describe("QA actual Plexus Pi/executor and strict native transport integration",
 
   it("eviction control: configured but unused Gatekeeper workspace drains without Pi", async () => {
     const f = await fixture([]);
+    const before = await f.workspace.getTestIncarnation();
     console.info("QA unused Gatekeeper control: before workspace eviction");
     await boundedEviction(f.workspace);
     console.info("QA unused Gatekeeper control: workspace evicted");
-    expect((await f.snapshot()).captured).toHaveLength(0);
+    const fresh = env.OverseerDurableObject.get(f.workspace.id);
+    expect(await fresh.getTestIncarnation()).not.toBe(before);
+    await assertIdle(fresh);
+    await runInDurableObject(fresh, async instance => {
+      const impl = Reflect.get(instance, "impl");
+      expect(impl.storage.chatMeta.get(0).activeAgent).toBeUndefined();
+      const gatekeeperId = impl.storage.chatContext.get(0).bindings.TEST_RESOURCE;
+      expect(await impl.getGatekeeperFacet(gatekeeperId).evidence()).toEqual({ value: 0, applied: 0, rejected: 0 });
+    });
+    expect(await f.snapshot()).toEqual({ captured: [], cancellations: [], headers: 0, errors: [] });
   });
 
   it("restart control: text-only Pi success survives an actual native actor reset", async () => {
@@ -174,6 +191,9 @@ describe("QA actual Plexus Pi/executor and strict native transport integration",
       try {
         const model = { ...f.context.aiModel, profile: { ...f.context.aiModel!.profile, id: "qa-legacy-model" },
           config: { provider: "azure-foundry", model: "gpt-4o", apiToken: "SYNTHETIC_LEGACY_KEY", apiUrl: "https://fixture.internal/v1" } };
+        const meta = impl.storage.chatMeta.get(0);
+        meta.activeAgent = model.profile;
+        impl.storage.chatMeta.put(meta);
         impl.startAgent(0, model, f.context.profile, f.owner.id.toString());
         await impl.waitForAllAgentsToComplete();
         expect(JSON.stringify([...impl.storage.chats.list()])).toContain("QA legacy response");
