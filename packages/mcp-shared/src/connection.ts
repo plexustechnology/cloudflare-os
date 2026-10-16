@@ -16,7 +16,7 @@ import {
   type ToolCatalog,
 }
   from "./client.js";
-import { fetchOptions, type InsecureEnv } from "./fetch.js";
+import { fetchOptions, type FetchOptions, type InsecureEnv } from "./fetch.js";
 import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 
 /** The environment this module reads. Each Worker's own `Env` satisfies it structurally. */
@@ -26,6 +26,8 @@ export type ConnectionEnv = InsecureEnv & {
 };
 
 export type WithClientOptions = {
+  /** Additional connector-owned outbound policy; never accepted from a Session caller. */
+  fetchOptions?: FetchOptions;
   /** False for a call that may have taken effect, so a dropped session is not retried. See above. */
   retryOnExpiry?: boolean;
   /** Absolute deadline shared with time spent waiting for a discovery slot. */
@@ -108,6 +110,7 @@ export async function withClient<T>(
       return authorization;
     }, sessionId, {
       ...fetchOptions(env),
+      ...options.fetchOptions,
       deadline: options.deadline,
     });
   let persistedSessionId = sessionId;

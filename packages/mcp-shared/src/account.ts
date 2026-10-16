@@ -131,6 +131,20 @@ export type AccountEnv = ConnectionEnv & {
   BASE_URL?: string;
 };
 
+/** Connector-owned checks applied before OAuth state is used or accepted. */
+export type AccountConnectionPolicy = {
+  /** Lifecycle boundary at which the policy is being checked. */
+  stage: "target" | "discovery" | "client" | "tokens" | "ready";
+  /** Endpoint and authentication mode for this account. */
+  server: ConnectedServer;
+  /** Discovered OAuth resource and authorization server. */
+  discovery?: OAuthDiscoveryState;
+  /** Registered OAuth client. */
+  client?: StoredOAuthClientInformation;
+  /** Issued tokens, including the retained refresh token on renewal. */
+  tokens?: OAuthTokens;
+};
+
 // Longest server-supplied name kept. It appears in every approval prompt, so it is capped,
 // single-line, and stripped of the markdown that would let it forge structure there.
 const MAX_SERVER_NAME = 60;
@@ -162,6 +176,9 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
    * because a Durable Object can only reach its own Worker's exports.
    */
   protected abstract mintAccount(): Fetcher<GatekeeperUser>;
+
+  /** Optional connector policy; defaults preserve generic MCP behavior. */
+  protected validateConnection(_connection: AccountConnectionPolicy): void {}
 
   /**
    * A bearer token this deployment was configured with, for an endpoint whose `auth` is `"token"`.
@@ -299,6 +316,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   ): Promise<ConnectOutcome> {
     const existing = this.server();
     const server = resolveConnectTarget(existing, target);
+    if (server) this.validateConnection({ stage: "target", server });
     if (!server || !this.claimSelection(initiationNonce)) return { kind: "invalid" };
 
     // Every claimed attempt advances the generation before its first await, invalidating old probe,
@@ -435,10 +453,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           this.ctx.storage.kv.delete("oauthClient");
           return undefined;
         }
+        if (client) this.validateConnection({ stage: "client", server, client });
         return matchesIssuer(client, context?.issuer) ? client : undefined;
       },
       saveClientInformation: (client, context) => {
         current();
+        this.validateConnection({ stage: "client", server, client });
         this.ctx.storage.kv.put("oauthClient", { ...client, issuer: context?.issuer });
       },
       tokens: context => {
@@ -453,6 +473,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       saveTokens: (tokens, context) => {
         current();
+        this.validateConnection({ stage: "tokens", server, tokens });
         this.ctx.storage.kv.put<OAuthTokens>("tokens", {
           ...tokens,
           issuer: context?.issuer,
@@ -495,10 +516,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           this.ctx.storage.kv.delete("oauthDiscovery");
           return undefined;
         }
+        if (state) this.validateConnection({ stage: "discovery", server, discovery: state });
         return state;
       },
       saveDiscoveryState: state => {
         current();
+        this.validateConnection({ stage: "discovery", server, discovery: state });
         this.ctx.storage.kv.put("oauthDiscovery", state);
       },
       invalidateCredentials: scope => {
@@ -616,6 +639,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   private async complete(
     server: ConnectedServer, info: McpServerInfo, generation: number,
   ): Promise<void> {
+    this.validateConnection({ stage: "ready", server,
+      discovery: this.ctx.storage.kv.get<OAuthDiscoveryState>("oauthDiscovery"),
+      client: this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient"),
+      tokens: this.ctx.storage.kv.get<OAuthTokens>("tokens"),
+    });
     if (!this.isCurrentConnection(server, generation)) {
       throw new Error("This connection attempt was replaced by a newer one.");
     }
@@ -658,6 +686,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
    */
   async getConnection(endpoint: string): Promise<McpConnection> {
     const server = this.requireServer();
+    this.validateConnection({ stage: "ready", server,
+      discovery: this.ctx.storage.kv.get<OAuthDiscoveryState>("oauthDiscovery"),
+      client: this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient"),
+      tokens: this.ctx.storage.kv.get<OAuthTokens>("tokens"),
+    });
     const generation = this.connectionGeneration();
     // Facets are durable and can outlive a deployment repoint. The facet supplies the endpoint it
     // is about to contact; reject before reading or refreshing credentials if the account has since
@@ -766,6 +799,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     discovery: OAuthDiscoveryState, client: StoredOAuthClientInformation,
   ): Promise<string> {
     try {
+      this.validateConnection({ stage: "discovery", server, discovery });
+      this.validateConnection({ stage: "client", server, client });
       const refreshed = await refreshAuthorization(discovery.authorizationServerUrl, {
         metadata: discovery.authorizationServerMetadata,
         clientInformation: client,
@@ -777,12 +812,14 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         throw new Error("Discarded credentials refreshed for a previous MCP connection.");
       }
       // Servers may or may not rotate the refresh token; keep the old one when they don't.
-      this.ctx.storage.kv.put<OAuthTokens>("tokens", {
+      const tokens: OAuthTokens = {
         ...refreshed,
         refresh_token: refreshed.refresh_token ?? refreshToken,
         issuer: client.issuer,
         expiresAt: Date.now() + (refreshed.expires_in ?? DEFAULT_TOKEN_LIFETIME_S) * 1000,
-      });
+      };
+      this.validateConnection({ stage: "tokens", server, tokens });
+      this.ctx.storage.kv.put<OAuthTokens>("tokens", tokens);
       return refreshed.access_token;
     } catch (err) {
       const safeError = safeOAuthError(err, [refreshToken], client);
