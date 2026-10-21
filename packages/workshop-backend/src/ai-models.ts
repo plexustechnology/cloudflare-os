@@ -22,7 +22,7 @@ import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } 
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import {
-  AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, GatewayModelCapabilities,
+  AiChatAuthorInfo, AiModelConfig, AiLegacyModelConfig, AiModelProvider, BuiltInReasoning, GatewayModelCapabilities,
   REASONING_LEVELS, ReasoningLevel, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
@@ -32,6 +32,8 @@ import {
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
+import { getDeploymentOpenAiModel } from "./deployment-openai.js";
+import { getProviderConnectionModel, type ProviderModelAuthority } from "./provider-model.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -62,6 +64,7 @@ type GatewayMetadataContext = {
 };
 
 type ModelRoutingOptions = {
+  connection?: ProviderModelAuthority;
   sessionAffinity?: string;
   userGateway?: UserGatewayRouting;
   metadata?: GatewayMetadataContext;
@@ -72,6 +75,8 @@ type ModelRoutingOptions = {
  * handle-level knobs.
  */
 export type ModelStreamOptions = SimpleStreamOptions & {
+  /** Backend-only purpose tag for explicitly consented same-session compaction. */
+  purpose?: "sessionCompaction";
   /**
    * When false, suppress the handle's per-API thinking/reasoning defaults so the request runs
    * without extended thinking (as far as the model allows). Used by completeText(): one-shot
@@ -168,7 +173,7 @@ type CatalogEntry = Pick<Model<Api>, "id"> & Partial<Pick<Model<Api>,
 // pi's entry for a gateway model: its own or, while pi has none, the flags of the model its
 // config says it behaves like, under the capabilities its config states. pi's own entry always
 // wins, so a pi that learns the model takes over from both.
-function gatewayCatalogModel(config: AiModelConfig): CatalogEntry | undefined {
+function gatewayCatalogModel(config: AiLegacyModelConfig): CatalogEntry | undefined {
   let own = catalogModel(config.provider, config.model);
   if (own) return own;
   let like = config.behavesLike === undefined
@@ -213,7 +218,7 @@ function gatewayCatalogModel(config: AiModelConfig): CatalogEntry | undefined {
 // Token limits for a synthesized model. The model config's own overrides come first, then
 // SUGGESTED_MODELS (compaction budgets in agent-compaction.ts are computed from the same two); pi's
 // catalog fills gaps for models we don't list, and unknown models get conservative defaults.
-function modelTokenWindow(config: AiModelConfig, catalog: CatalogEntry | undefined)
+function modelTokenWindow(config: AiLegacyModelConfig, catalog: CatalogEntry | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   return {
@@ -251,7 +256,7 @@ function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCo
 // thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
 // including unified billing on a user's own gateway -- is orthogonal to which API a request
 // speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
-function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
+function gatewayNativeModel(config: AiLegacyModelConfig, gatewayUrl: string): Model<Api> | undefined {
   const catalog = gatewayCatalogModel(config);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
@@ -564,6 +569,11 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  if (config.provider === "provider-connection") {
+    if (!options.connection) throw new Error("connection_forbidden");
+    return getProviderConnectionModel(env, config, options.connection);
+  }
+  if (config.provider === "deployment-openai-compatible") return getDeploymentOpenAiModel(env, config);
   if (config.provider === "azure-foundry") return getModelDirect(config, options.sessionAffinity);
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
@@ -588,7 +598,7 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
 // Gateway. Supports every provider AI Gateway serves, including Workers AI. Billed to the
 // user's Cloudflare credits; no provider API key required.
 function getModelViaUserGateway(
-  config: AiModelConfig,
+  config: AiLegacyModelConfig,
   metadata: GatewayMetadata,
   userGateway: UserGatewayRouting,
   sessionAffinity?: string,
@@ -652,7 +662,7 @@ function bindingFetch(binding: Ai): FetchFunction {
 // Used only for requests that are NOT billed to a connected user's account.
 function getModelViaGateway(
   gwConfig: AiGatewayConfig,
-  config: AiModelConfig,
+  config: AiLegacyModelConfig,
   initiator: AiChatAuthorInfo,
   options: ModelRoutingOptions,
 ): ModelHandle {
@@ -719,17 +729,19 @@ function getModelViaGateway(
 // the config's extraHeaders instead (AI Gateway only injects its stored provider key into requests
 // that don't already carry one). The SDKs insist on *some* key, so they get a placeholder, while a
 // null default header deletes the header they derive from it; extra headers still override.
-function directAuth(config: AiModelConfig, keyHeader: string): Pick<HandleArgs, "apiKey" | "headers"> {
+function directAuth(config: AiLegacyModelConfig, keyHeader: string): Pick<HandleArgs, "apiKey" | "headers"> {
   return config.apiToken === ""
       ? { apiKey: "unused", headers: { [keyHeader]: null, ...config.extraHeaders } }
       : { apiKey: config.apiToken, headers: config.extraHeaders };
 }
 
 // Direct provider access using the credentials in the model config itself (no AI Gateway).
-function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelHandle {
+function getModelDirect(config: AiLegacyModelConfig, sessionAffinity?: string): ModelHandle {
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
+    case "deployment-openai-compatible":
+      throw new Error("Deployment OpenAI-compatible models require deployment configuration.");
     case "anthropic":
       return makeHandle({
         model: {
@@ -917,6 +929,7 @@ export class LanguageModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<LanguageModelBinding> {
+    if (this.ctx.props.config.provider === "provider-connection") throw new Error("connection_forbidden");
     // A binding makes one-shot calls, which ask for no reasoning level. Without the level it was
     // minted with, its model is described as one with none set, whatever the admin has set since.
     let { reasoning, ...config } = this.ctx.props.config;

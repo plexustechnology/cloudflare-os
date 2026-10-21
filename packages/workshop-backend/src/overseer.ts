@@ -13,7 +13,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, makeOverseerStorage,
-  type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
+  type ActionRecord, type ActiveAgentRecord, type PersonalTurnRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
@@ -81,6 +81,10 @@ import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-r
 import type { ChatGatewayRpcTarget, GadgetResponseSnapshot, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import { snapshotExternalMessageResponse } from "./external-message-response.js";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import type { AiConnectionModelConfig } from "@gadgets/workshop-shared/api";
+import type { ProviderInferencePurpose } from "@gadgets/workshop-shared/provider-inference";
+import type { ProviderModelAuthority } from "./provider-model.js";
+import { classifyPersonalProviderFailure } from "./provider-errors.js";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
@@ -1009,6 +1013,17 @@ class OverseerImpl implements AgentHooks {
   // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
   // by replaying the persisted chat log.
   async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
+    if (record.personalTurn || record.modelId.startsWith("provider-connection/")) {
+      const personal = this.storage.personalTurns.get(record.chatId);
+      if (personal) this.storage.personalTurns.put({ ...personal, state: "recovery-required" });
+      this.postAgentErrorMessage(record.chatId, record.initiator,
+        "The personal model turn was interrupted. Reconnect and explicitly retry to recover; inference was not replayed.", "reconnect_required");
+      const meta = this.storage.chatMeta.get(record.chatId);
+      if (meta) { delete meta.activeAgent; this.storage.chatMeta.put(meta); }
+      this.#unregisterRunningAgent(record.chatId);
+      this.#finishAgentTurn(record.chatId);
+      return;
+    }
     let aiModel: UserAiModelRecord | undefined;
     try {
       let user = this.users.get(this.users.idFromString(record.initiatorUserId));
@@ -6048,6 +6063,7 @@ class OverseerImpl implements AgentHooks {
     formats?: MessageFormatRef[],
     externalCommitGuard?: () => void,
   ): Promise<number> {
+    if (userMeta.aiModel?.config.provider === "provider-connection" && (responseTargetRegistration || externalChatKey)) throw new Error("connection_forbidden");
     if (responseTargetRegistration && !externalCommitGuard) {
       let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
       if (decision.reuseExisting) return decision.record.chatId;
@@ -6136,6 +6152,7 @@ class OverseerImpl implements AgentHooks {
     formats?: MessageFormatRef[],
     externalCommitGuard?: () => void,
   ): Promise<void> {
+    if (userMeta.aiModel?.config.provider === "provider-connection" && responseTargetRegistration) throw new Error("connection_forbidden");
     if (responseTargetRegistration && !externalCommitGuard) {
       let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
       if (decision.reuseExisting) return;
@@ -6508,16 +6525,26 @@ class OverseerImpl implements AgentHooks {
   startAgent(chatId: number, aiModel: UserAiModelRecord,
              initiator: AiChatAuthorInfo, initiatorUserId: string,
              callbackInitiated: boolean = false,
-             keepAlive: boolean = false): void {
+             keepAlive: boolean = false,
+             continuation?: PersonalTurnRecord): void {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
+    const personalTurn: PersonalTurnRecord | undefined = aiModel.config.provider === "provider-connection"
+      ? { chatId, initiatorUserId, turnId: continuation?.turnId ?? crypto.randomUUID(),
+        purpose: continuation ? "approvalResume" : "ownerInteractive",
+        fromSequence: continuation?.fromSequence ?? this.nextChatSequencePeek(chatId),
+        config: { ...aiModel.config }, state: "running" }
+      : undefined;
+    if (personalTurn) this.storage.personalTurns.put(personalTurn);
+    else this.storage.personalTurns.delete(chatId);
     this.storage.activeAgents.put({
       chatId,
       initiatorUserId,
       modelId: aiModel.profile.id,
       initiator,
       callbackInitiated,
+      ...(personalTurn ? { personalTurn } : {}),
     });
 
     let liveChat = this.#getLiveChat(chatId);
@@ -6536,6 +6563,48 @@ class OverseerImpl implements AgentHooks {
       modelId: aiModel.profile.id,
     }, () => this.#runAgentTurnWithContext(
         chatId, aiModel, initiator, callbackInitiated, liveChat));
+  }
+
+  async #personalAuthority(chatId: number, config: AiConnectionModelConfig,
+      initiator: AiChatAuthorInfo, callbackInitiated: boolean): Promise<ProviderModelAuthority> {
+    const record = this.storage.activeAgents.get(chatId);
+    const turn = record?.personalTurn;
+    if (!turn || callbackInitiated || initiator.type !== "user" || record.initiatorUserId !== this.ownerId ||
+        turn.initiatorUserId !== this.ownerId || this.getChatAgentContext(chatId).spawnerConfig) throw new Error("connection_forbidden");
+    const ownerId = turn.initiatorUserId;
+    const authorize = async (purpose: ProviderInferencePurpose) => {
+      const current = this.storage.activeAgents.get(chatId);
+      if (!current?.personalTurn || current.personalTurn.turnId !== turn.turnId || current.initiatorUserId !== ownerId ||
+          this.ownerId !== ownerId || (purpose !== "sessionCompaction" && purpose !== turn.purpose)) throw new Error("connection_forbidden");
+      const user = this.users.get(this.users.idFromString(ownerId));
+      const context = await user.getChatContext(current.modelId);
+      const selected = context.aiModel?.config;
+      if (selected?.provider !== "provider-connection" || selected.connectionId !== config.connectionId ||
+          selected.generation !== config.generation || selected.model !== config.model || selected.transport !== config.transport || selected.billing !== config.billing ||
+          current.personalTurn.config.generation !== config.generation || current.personalTurn.config.connectionId !== config.connectionId ||
+          current.personalTurn.config.model !== config.model || current.personalTurn.config.transport !== config.transport || current.personalTurn.config.billing !== config.billing) {
+        throw new Error("reconnect_required");
+      }
+      const connection = config.billing === "chatgpt-plan" ? await user.getProviderSubscriptionStatus(config.connectionId) : await user.getProviderConnectionStatus(config.connectionId);
+      if (connection.transport !== config.transport || connection.consent.billing !== config.billing || connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
+      if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
+      if (!connection.consent.ownerInteractive || purpose === "sessionCompaction" && !connection.consent.sessionCompaction ||
+          (await this.getSharingManager()).hasAnyShares()) throw new Error("connection_forbidden");
+      // Re-read after every remote await so cancelled, replaced and deleted turns cannot spend.
+      if (this.storage.activeAgents.get(chatId)?.personalTurn?.turnId !== turn.turnId || this.ownerId !== ownerId) throw new Error("connection_forbidden");
+    };
+    await authorize(turn.purpose);
+    return { ownerId, requesterUserId: record.initiatorUserId, workspaceOwnerId: ownerId,
+      session: { workspaceId: this.ctx.id.toString(), chatId, turnId: turn.turnId }, purpose: turn.purpose, authorize };
+  }
+
+  /** True for a personal thread, including auxiliary operations after its active turn ended. */
+  isPersonalThread(chatId: number): boolean {
+    if (this.storage.personalTurns.get(chatId)) return true;
+    for (const message of this.storage.chats.list({ prefix: `${keyString(chatId)}.`, reverse: true })) {
+      if (message.author.type === "agent") return message.author.id.startsWith("provider-connection/");
+    }
+    return false;
   }
 
   async #runAgentTurnWithContext(chatId: number, aiModel: UserAiModelRecord,
@@ -6566,6 +6635,8 @@ class OverseerImpl implements AgentHooks {
         // record's creating step never reached its barrier, so the log holds no trace of it; see
         // reconcilePendingGadgets). The model then simply re-creates a reaped gadget if it still
         // wants it.
+        const connection = aiModel.config.provider === "provider-connection"
+        ? await this.#personalAuthority(chatId, aiModel.config, initiator, callbackInitiated) : undefined;
         await this.reconcilePendingGadgets(chatId);
 
         // Turn-start materialization: live rows recorded before this turn (user edits, for turns
@@ -6580,7 +6651,7 @@ class OverseerImpl implements AgentHooks {
         // (This runs inside the try so the `finally` below still clears the active-agent state and
         // emits a stream "clear" — otherwise the UI would spin forever on a block.)
         let byokRouting: UserGatewayRouting | undefined;
-        if (this.ownerId) {
+        if (!connection && !callbackInitiated && this.ownerId) {
           let ownerStub = this.users.get(this.users.idFromString(this.ownerId));
           let usage = await checkUsageAndBalance(this.env, ownerStub);
           if (!usage.allowed) {
@@ -6609,6 +6680,7 @@ class OverseerImpl implements AgentHooks {
               sessionAffinity,
               userGateway: byokRouting,
               metadata: { source: "chat", gadgetId: this.ctx.id.toString(), chatId },
+              ...(connection ? { connection } : {}),
             });
         turn.setModel(chosenModel.model);
 
@@ -6627,23 +6699,32 @@ class OverseerImpl implements AgentHooks {
       // runAgent converts them back to a throw), carrying the failing request's HTTP status when
       // one was observed.
       let apiError = err instanceof AgentTurnError ? err : null;
+      const personalFailure = aiModel.config.provider === "provider-connection"
+        ? classifyPersonalProviderFailure(err, apiError?.statusCode, liveChat.cancelController.signal.aborted) : undefined;
+      const diagnosticError = personalFailure?.error ?? err;
 
       // Report unexpected failures for triage. Skip expected provider 4xx (auth,
       // rate limit, quota/billing), which are ordinary control flow, not incidents.
       const apiStatus = apiError?.statusCode;
-      if (apiStatus === undefined || apiStatus >= 500) {
-        reportIssue("overseer.run-agent", err, {
-          attributes: obsContext.get(),
-          http: apiStatus === undefined
+      const observedStatus = personalFailure && (!Number.isSafeInteger(apiStatus) || apiStatus! < 100 || apiStatus! > 599)
+        ? undefined : apiStatus;
+      if (personalFailure ? !personalFailure.expected : apiStatus === undefined || apiStatus >= 500) {
+        reportIssue("overseer.run-agent", diagnosticError, {
+          attributes: personalFailure ? { ...obsContext.get(), statusCode: personalFailure.statusCode } : obsContext.get(),
+          http: observedStatus === undefined
             ? undefined
-            : { kind: "client", responseStatusCode: apiStatus },
+            : { kind: "client", responseStatusCode: observedStatus },
         });
       }
 
-      let errorMessage = stringifyError(err);
-      if (apiError) {
+      let errorMessage = personalFailure?.message ?? stringifyError(err);
+      if (personalFailure?.expected) {
+        turnLogger.warn("personal inference request denied", {
+          event: "agent.run.denied", statusCode: personalFailure.statusCode, error: diagnosticError,
+        });
+      } else if (apiError || personalFailure) {
         turnLogger.error("runAgent failed", {
-          event: "agent.run.failed", statusCode: apiError.statusCode, error: err,
+          event: "agent.run.failed", statusCode: personalFailure?.statusCode ?? apiError!.statusCode, error: diagnosticError,
         });
       } else {
         turnLogger.error("runAgent failed", {
@@ -6655,8 +6736,22 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
+      this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage, personalFailure?.code);
     } finally {
+      const personal = this.storage.personalTurns.get(chatId);
+      if (personal?.state === "running") {
+        let suspended = false;
+        for (const message of this.storage.chats.list({ prefix: `${keyString(chatId)}.`, reverse: true })) {
+          if (message.sequence < personal.fromSequence) break;
+          const action = message.type === "action" ? this.storage.actions.get(message.actionId) : undefined;
+          if (message.type === "connectionRequest" && message.state === "pending" ||
+              action?.type === "action" && action.state === "pending" && action.description.awaitDecision) {
+            suspended = true;
+            break;
+          }
+        }
+        this.storage.personalTurns.put({ ...personal, state: suspended ? "suspended" : "ended" });
+      }
       // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
       // the background) so the next turn's billing decision reflects the spend just incurred. Runs
       // on both the success and error paths — an "insufficient funds" failure is exactly when an
@@ -6805,6 +6900,7 @@ class OverseerImpl implements AgentHooks {
         modelError = err;
         userMeta = await user.getChatContext(null);
       }
+      if (userMeta.aiModel?.config.provider === "provider-connection") throw new Error("connection_forbidden");
       author = this.gadgetAuthorFor(userMeta.profile);
 
       // getChatContext() waits on the user's Durable Object. A user message may start an agent
@@ -7302,7 +7398,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (anythingToName) {
-      let quick = await this.#getNamingQuickModel();
+      let quick = this.isPersonalThread(chatId) ? undefined : await this.#getNamingQuickModel();
 
       // Name one resource: reuse the target's existing name in scope when there is one, else ask
       // the quick model, else fall back to the gatekeeper's suggested binding name (suffixed to
@@ -7884,6 +7980,7 @@ class OverseerImpl implements AgentHooks {
   async generateThreadTitle(chatId: number, initialMessage: string,
                             modelConfig: AiModelConfig,
                             initiator: AiChatAuthorInfo): Promise<void> {
+    if (this.isPersonalThread(chatId) || modelConfig.provider === "provider-connection") return;
     try {
       let model = getModel(this.env, modelConfig, initiator, {
         metadata: { source: "thread-title", gadgetId: this.ctx.id.toString(), chatId },
@@ -7933,6 +8030,7 @@ class OverseerImpl implements AgentHooks {
   // Generate a title for the whole gadget, called only after code starts being written.
   async generateGadgetTitle(chatId: number, modelConfig: AiModelConfig,
                             initiator: AiChatAuthorInfo) {
+    if (this.isPersonalThread(chatId) || modelConfig.provider === "provider-connection") return;
     try {
       let parts: string[] = [];
 
@@ -9938,6 +10036,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let initiatorUserId = this.impl.users.idFromString(resolveUserId).toString();
     let user = this.impl.users.get(this.impl.users.idFromString(resolveUserId));
     let userMeta = await user.getChatContext(config.modelId);
+    if (userMeta.aiModel?.config.provider === "provider-connection") throw new Error("connection_forbidden");
 
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
@@ -10474,7 +10573,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       for (let name of chatNames ?? []) taken.add(name);
       let userMeta = await retryOnDoReset(
           () => this.#clientUser.getChatContext(null), this.impl.logger);
-      if (userMeta.quickModel) {
+      if (userMeta.quickModel && (chatId === undefined || !this.impl.isPersonalThread(chatId))) {
         bindingName = await this.impl.generateBindingName(
             title, taken, {config: userMeta.quickModel, initiator: userMeta.profile});
       }
@@ -10660,6 +10759,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>> {
     let chatMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
+    if (chatMeta.aiModel?.config.provider === "provider-connection") throw new Error("connection_forbidden");
     let props: LanguageModelGatekeeperProps = {
       displayName: chatMeta.aiModel!.profile.name,
       config: chatMeta.aiModel!.config,
@@ -10724,6 +10824,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let chatMeta = await retryOnDoReset(
           () => this.#clientUser.getChatContext(config.modelId), this.impl.logger);
       if (chatMeta.aiModel) {
+        if (chatMeta.aiModel.config.provider === "provider-connection") throw new Error("connection_forbidden");
         creationSpec.modelProvider = chatMeta.aiModel.config.provider;
         creationSpec.modelName = chatMeta.aiModel.config.model;
       }
@@ -10773,6 +10874,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (action.type === "observation") {
       throw new Error("Observations can't have 'pending' state.");
     }
+    if (action.caller.from === "agent") await this.#assertPersonalDecision(action.caller.chatId);
 
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
@@ -11062,6 +11164,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let meta = this.impl.storage.chatMeta.get(chatId);
     if (!meta) return;  // Chat deleted.
     if (meta.activeAgent) return;  // Already running; it'll pick up the change on its next read.
+    const personal = this.impl.storage.personalTurns.get(chatId);
+    if (personal && (personal.state !== "suspended" || personal.initiatorUserId !== this.#clientUser.id.toString() ||
+        personal.initiatorUserId !== this.impl.ownerId || (await this.impl.getSharingManager()).hasAnyShares())) throw new Error("connection_forbidden");
 
     // Recover the model this thread was using. getChatContext(null) does NOT resolve a model, so we
     // find the id from the most recent agent-authored message (its author.id is the model id).
@@ -11094,6 +11199,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
     if (!userMeta.aiModel) return;  // No model resolved; nothing to resume.
+    if (userMeta.aiModel.config.provider === "provider-connection") {
+      const config = userMeta.aiModel.config;
+      if (!personal || personal.config.connectionId !== config.connectionId || personal.config.generation !== config.generation ||
+          personal.config.model !== config.model || personal.config.transport !== config.transport || personal.config.billing !== config.billing) throw new Error("reconnect_required");
+      const connection = config.billing === "chatgpt-plan" ? await this.#clientUser.getProviderSubscriptionStatus(config.connectionId) : await this.#clientUser.getProviderConnectionStatus(config.connectionId);
+      if (connection.transport !== config.transport || connection.consent.billing !== config.billing || connection.generation !== config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
+      if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
+    } else if (personal) throw new Error("connection_forbidden");
 
     let preparation = this.impl.waitForChatMessagePreparation(chatId);
     if (preparation) {
@@ -11111,7 +11224,23 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.chatMeta.put(fresh);
 
     this.impl.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                         this.#clientUser.id.toString());
+                         this.#clientUser.id.toString(), false, false, personal);
+  }
+
+  async #assertPersonalDecision(chatId: number): Promise<void> {
+    const turn = this.impl.storage.personalTurns.get(chatId);
+    if (!turn) return;
+    if (turn.initiatorUserId !== this.#clientUser.id.toString() || turn.initiatorUserId !== this.impl.ownerId ||
+        (turn.state !== "running" && turn.state !== "suspended") || (await this.impl.getSharingManager()).hasAnyShares()) throw new Error("connection_forbidden");
+    const selected = (await this.#clientUser.getChatContext(`provider-connection/${turn.config.connectionId}/${encodeURIComponent(turn.config.model)}`)).aiModel?.config;
+    const connection = turn.config.billing === "chatgpt-plan" ? await this.#clientUser.getProviderSubscriptionStatus(turn.config.connectionId) : await this.#clientUser.getProviderConnectionStatus(turn.config.connectionId);
+    if (selected?.provider !== "provider-connection" || selected.generation !== turn.config.generation || selected.connectionId !== turn.config.connectionId ||
+        selected.model !== turn.config.model || selected.transport !== turn.config.transport || selected.billing !== turn.config.billing ||
+        connection.transport !== turn.config.transport || connection.consent.billing !== turn.config.billing ||
+        connection.generation !== turn.config.generation || connection.status !== "pending" || !connection.credentialConfigured) throw new Error("reconnect_required");
+    if (connection.inferenceEnabled !== true) throw new Error("adapter_disabled");
+    if (this.impl.ownerId !== turn.initiatorUserId || this.impl.storage.personalTurns.get(chatId)?.turnId !== turn.turnId ||
+        (await this.impl.getSharingManager()).hasAnyShares()) throw new Error("connection_forbidden");
   }
 
   async acceptConnectionRequest(
@@ -11120,6 +11249,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (msg.state !== "pending") {
       throw new Error(`Connection request is not pending: ${requestId}`);
     }
+    await this.#assertPersonalDecision(msg.chatId);
 
     msg.state = "accepted";
     // The gatekeeper is surfaced to the agent as a named binding in the chat's env, under the
@@ -11498,6 +11628,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.removeChatWorkpieces(chatId);
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
+    this.impl.storage.personalTurns.delete(chatId);
     // Buffer the checkpoints first: deleting invalidates the list cursor.
     for (let checkpoint of Array.from(
         this.impl.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {

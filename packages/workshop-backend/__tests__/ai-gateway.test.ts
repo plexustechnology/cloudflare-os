@@ -711,7 +711,7 @@ describe("GatewayModels", () => {
   // added model it offers is one that can run. This holds the two in step.
   it.each(Object.keys(SUGGESTED_MODELS) as AiModelProvider[])(
       "offers an added model on %s only if the gateway can route it", (provider) => {
-    const unroutable = provider === "azure-foundry" || (() => {
+    const unroutable = provider === "deployment-openai-compatible" || provider === "azure-foundry" || (() => {
       try {
         getModel(gatewayEnv(provider), { provider, model: "test-model", apiToken: "" }, USER);
         return false;

@@ -127,6 +127,15 @@ export class SharingManager {
     }
   }
 
+  /** Whether a live collaborator grant or unrevoked link exposes this workspace beyond its owner. */
+  hasAnyShares(): boolean {
+    if (this.computeEffectiveRoles().size > 0) return true;
+    for (let link of this.#listLinks()) {
+      if (!link.revoked) return true;
+    }
+    return false;
+  }
+
   // Every share link, revoked or not. Aliases are skipped.
   *#listLinks(): Generator<ShareLinkRecord> {
     for (let record of this.storage.shareKeys.list()) {

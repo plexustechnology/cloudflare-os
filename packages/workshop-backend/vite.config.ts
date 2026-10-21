@@ -88,6 +88,7 @@ export default {
       test: {
         ...vitestTask([
           { command: 'vitest run', idleSeconds: 120 },
+          'vitest run --config vitest.provider-connections.config.ts',
           'vitest run --config vitest.integration.config.ts',
         ]),
         dependsOn: [

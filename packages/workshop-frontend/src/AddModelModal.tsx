@@ -39,6 +39,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   cloudflare: 'Cloudflare API token',
   'azure-foundry': 'Azure Foundry API key',
   ollama: '(optional)',
+  'deployment-openai-compatible': '',
 }
 
 // Providers whose client can send no API key at all, so a proxy that extra headers authenticate
@@ -83,6 +84,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
   for (const provider of providerOrder) {
+    if (provider === 'deployment-openai-compatible') continue
     if (enabledProviders && provider !== 'azure-foundry' && !enabledProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.

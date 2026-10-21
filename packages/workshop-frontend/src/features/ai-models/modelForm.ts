@@ -11,6 +11,7 @@ export const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
   'azure-foundry': 'Azure Foundry',
+  'deployment-openai-compatible': 'Deployment model',
   ollama: 'Ollama',
 }
 

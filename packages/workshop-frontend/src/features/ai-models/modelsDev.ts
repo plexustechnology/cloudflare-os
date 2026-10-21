@@ -24,6 +24,7 @@ const MODELS_DEV_PROVIDER_IDS: Record<AiModelProvider, string | null> = {
   google: 'google',
   cloudflare: 'cloudflare-workers-ai',
   'azure-foundry': null,
+  'deployment-openai-compatible': null,
   ollama: null,
 }
 

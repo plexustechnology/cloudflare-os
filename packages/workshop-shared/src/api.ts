@@ -27,6 +27,7 @@ import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
+import type { ProviderConnectionsApi, ProviderSubscriptionConnectionsApi } from "./provider-connections-api.js";
 
 export const SERVICE_SALT = new Uint8Array([
   0xd9, 0x4e, 0x54, 0x1d, 0x29, 0xc1, 0x03, 0x74, 0x73, 0x7e, 0xb3, 0xe3, 0x34, 0x6d, 0x8f, 0x21
@@ -836,6 +837,21 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
 
+  /**
+   * Returns this authenticated user's immutable UserDO identifier for operator pilot provisioning,
+   * including when the adapter is disabled. The identifier alone grants no connection authority.
+   */
+  getProviderConnectionOwnerId(): Promise<string>;
+
+  /**
+   * Returns owner-scoped, write-only provider connection controls when explicitly enabled for this
+   * authenticated user, otherwise null. Dispose the returned capability when no longer needed.
+   */
+  getProviderConnectionsApi(): Promise<RpcStub<ProviderConnectionsApi> | null>;
+
+  /** Returns separately enabled owner subscription controls; dispose the returned capability. */
+  getProviderSubscriptionConnectionsApi(): Promise<RpcStub<ProviderSubscriptionConnectionsApi> | null>;
+
   // --- Deployment admin ---
 
   /**
@@ -1452,7 +1468,7 @@ export type CloudflareAccountOption = {
 };
 
 /** Supported AI providers. */
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "azure-foundry" | "ollama";
+export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "azure-foundry" | "ollama" | "deployment-openai-compatible";
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
@@ -1690,7 +1706,7 @@ export type GatewayModelTest = { model: string } &
 export type GatewayModelLevelTest = GatewayModelTest & { reasoning: ReasoningLevel | null };
 
 /** Configuration specifying how to connect to an AI model provider. */
-export type AiModelConfig = {
+export type AiLegacyModelConfig = {
   /** Which AI provider hosts the model? */
   provider: AiModelProvider;
 
@@ -1770,7 +1786,7 @@ export type AiModelConfig = {
  * passed to `AuthenticatedApi.updateModel()` or `addModel()`, a `null` secret keeps (or copies)
  * the stored value. It has none of the fields that only a deployment sets on its own models.
  */
-export type RedactedAiModelConfig = Omit<AiModelConfig,
+export type RedactedAiModelConfig = Omit<AiLegacyModelConfig,
     "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
     "capabilities"> & {
   /** `AiModelConfig.apiToken`, or null if withheld. */
@@ -1779,6 +1795,21 @@ export type RedactedAiModelConfig = Omit<AiModelConfig,
   /** `AiModelConfig.extraHeaders`, with each value null if withheld. */
   extraHeaders?: Record<string, string | null>;
 };
+
+/** Token-free personal model, constructed only by authenticated owner selection. */
+export type AiConnectionModelConfig = import("./provider-inference.js").ProviderFundingProfile & {
+  /** Discriminator separating personal infrastructure authority from legacy credentials. */
+  provider: "provider-connection";
+  /** Owner-indexed opaque connection identifier. */
+  connectionId: string;
+  /** Provider model slug from a fresh allowlisted catalog. */
+  model: string;
+  /** Authority generation captured by selection; reconnect requires reselection. */
+  generation: number;
+};
+
+/** Model configuration retaining legacy records alongside token-free personal selections. */
+export type AiModelConfig = AiLegacyModelConfig | AiConnectionModelConfig;
 
 /**
  * Workers AI adds the response cap to the prompt and rejects a request whose total exceeds the
@@ -1883,6 +1914,7 @@ const SUGGESTED_MODEL_CATALOG = {
   },
   "ollama": {
   },
+  "deployment-openai-compatible": {},
 } satisfies Record<AiModelProvider, Record<string, SuggestedModel>>;
 
 /**
@@ -3416,6 +3448,8 @@ export type AiChatAuthorInfo = {
    * Self-asserted and unverified: it is attribution only and must never be read as identity.
    */
   commitEmail?: string;
+  /** Server-minted personal funding display metadata; never inference authority. */
+  funding?: "openai-platform-api" | "chatgpt-plan";
 
   // Note: the avatar is intentionally not included here to keep this type lightweight (it's
   // embedded in every chat message). Fetch user avatars separately via

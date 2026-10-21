@@ -19,6 +19,10 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /** Policy and deadline options applied to one outbound operation. */
 export type FetchOptions = {
+  /** Optional deployment-owned origin allowlist, also enforced on redirect hops. */
+  allowedOrigins?: readonly string[];
+  /** False when a connector requires exact endpoints without HTTP redirects. */
+  followRedirects?: boolean;
   /** Permits plain HTTP and private hosts for local development. */
   allowInsecure?: boolean;
   /** Bounds the complete operation, including redirects and response-body streaming. */
@@ -128,6 +132,7 @@ export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
   } catch {
     return false;
   }
+  if (options.allowedOrigins && !options.allowedOrigins.includes(parsed.origin)) return false;
   if (options.allowInsecure) return true;
   if (parsed.protocol !== "https:") return false;
   return !isBlockedHost(parsed.hostname);
@@ -165,7 +170,7 @@ export async function guardedFetch(
     const response = await fetch(current, {
       ...init, method, body, headers, redirect: "manual", signal,
     });
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    if (!REDIRECT_STATUSES.has(response.status) || options.followRedirects === false) return response;
 
     const location = response.headers.get("Location");
     if (!location || hop >= MAX_REDIRECTS) return response;

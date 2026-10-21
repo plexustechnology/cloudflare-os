@@ -13,6 +13,10 @@ import {
   Copy,
 } from '@phosphor-icons/react'
 import AddModelModal, { type ModelModalMode } from '../AddModelModal'
+import { ProviderConnectionsSection } from '../features/providers/ProviderConnectionsSection'
+import { ProviderOwnerSetup } from '../features/providers/ProviderOwnerSetup'
+import { ProviderSubscriptionsSection } from '../features/providers/ProviderSubscriptionsSection'
+import { isPersonalProviderModel, personalProviderFunding } from '../features/providers/providerConnectionFlow'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
 
@@ -47,19 +51,20 @@ function ModelRow({
   onDelete: () => void
   onSetQuick: () => void
 }) {
+  const personal = isPersonalProviderModel(model.id)
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onSetQuick}
+      role={personal ? undefined : "button"}
+      tabIndex={personal ? undefined : 0}
+      onClick={personal ? undefined : onSetQuick}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (!personal && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault()
           onSetQuick()
         }
       }}
-      title={isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
-      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
+      title={personal ? `Personal model — ${personalProviderFunding(model) === 'chatgpt-plan' ? 'ChatGPT plan and credits' : 'OpenAI API billing'}. Quick tasks are unavailable.` : isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
+      className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint ${personal ? "" : "cursor-pointer"}`}
     >
       {/* Neutral monogram — matches the sidebar/workspaces treatment */}
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-[12px] font-medium text-kumo-subtle">
@@ -69,7 +74,7 @@ function ModelRow({
       {/* Info */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default">
+          <span className={`${personal ? "break-words" : "truncate"} text-sm font-medium tracking-[-0.25px] text-kumo-default`}>
             {model.name}
           </span>
           {isBuiltIn && (
@@ -96,18 +101,18 @@ function ModelRow({
             render={
               <button
                 aria-label="Provider actions"
-                className="cursor-pointer rounded-md p-1.5 text-kumo-subtle transition-colors hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                className="min-h-11 min-w-11 cursor-pointer rounded-md p-1.5 text-kumo-subtle transition-colors hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <DotsThreeVertical size={16} />
               </button>
             }
           />
           <DropdownMenu.Content className={MENU_CONTENT}>
-            <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
+            {!personal && <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
               <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
               {isQuick ? 'Clear quick model' : 'Set as quick model'}
-            </DropdownMenu.Item>
-            {!isBuiltIn && canEdit && (
+            </DropdownMenu.Item>}
+            {!isBuiltIn && !personal && canEdit && (
               <>
                 <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
                   <PencilSimple size={13} className="mr-2" />
@@ -122,7 +127,7 @@ function ModelRow({
             {!isBuiltIn && (
               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
                 <Trash size={13} className="mr-2" />
-                Delete provider
+                {personal ? 'Remove model' : 'Delete provider'}
               </DropdownMenu.Item>
             )}
           </DropdownMenu.Content>
@@ -159,8 +164,13 @@ function ProvidersPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   // The stored model being edited or cloned, once its configuration has loaded.
   const [sourceMode, setSourceMode] = useState<Exclude<ModelModalMode, { type: 'add' }> | null>(null)
+  const loadEpoch = useRef(0)
+  const activeSource = useRef(authenticatedApi)
+  activeSource.current = authenticatedApi
 
   const fetchAll = async () => {
+    if (activeSource.current !== authenticatedApi) return
+    const operation = ++loadEpoch.current
     setLoadError(false)
     try {
       const [modelList, qm, cfg] = await Promise.all([
@@ -168,6 +178,7 @@ function ProvidersPage() {
         authenticatedApi.getQuickModel(),
         authenticatedApi.getAiConfig(),
       ])
+      if (operation !== loadEpoch.current || activeSource.current !== authenticatedApi) return
       setModels(modelList)
       setQuickModel(qm)
       setAiConfig(cfg)
@@ -179,14 +190,17 @@ function ProvidersPage() {
         setSourceMode(null)
       }
     } catch (err) {
-      console.error('Failed to load providers:', err)
-      setLoadError(true)
+      // Do not forward RPC diagnostics into browser reporting.
+      if (operation === loadEpoch.current && activeSource.current === authenticatedApi) setLoadError(true)
     } finally {
-      setLoading(false)
+      if (operation === loadEpoch.current && activeSource.current === authenticatedApi) setLoading(false)
     }
   }
 
-  useEffect(() => { fetchAll() }, [authenticatedApi])
+  useEffect(() => {
+    void fetchAll()
+    return () => { ++loadEpoch.current }
+  }, [authenticatedApi])
 
   const gatewayMode = aiConfig?.enabled === true
   // False only on an AI Gateway deployment whose administrator turned adding models off.
@@ -215,13 +229,15 @@ function ProvidersPage() {
   }
 
   const handleDelete = async (model: AiChatAuthorInfo) => {
-    if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
+    if (!confirm(isPersonalProviderModel(model.id)
+      ? `Remove "${model.name}"? Your connection will remain configured. Manage its key in Personal connections.`
+      : `Delete "${model.name}"? This cannot be undone.`)) return
     setDeletingId(model.id)
     try {
       await authenticatedApi.deleteModel(model.id)
       await fetchAll()
     } catch (err) {
-      console.error('Failed to delete model:', err)
+      // Render only fixed messages; RPC errors may contain provider diagnostics.
       toasts.add({ title: 'Failed to delete provider', variant: 'error' })
     } finally {
       setDeletingId(null)
@@ -232,14 +248,14 @@ function ProvidersPage() {
   // in flight.
   const quickInFlight = useRef(false)
   const handleSetQuick = async (modelId: string) => {
-    if (quickInFlight.current) return
+    if (quickInFlight.current || isPersonalProviderModel(modelId)) return
     quickInFlight.current = true
     const next = quickModel === modelId ? null : modelId
     setQuickModel(next)
     try {
       await authenticatedApi.setQuickModel(next)
     } catch (err) {
-      console.error('Failed to set quick model:', err)
+      // Render only fixed messages; RPC errors may contain provider diagnostics.
       setQuickModel(quickModel) // revert
       toasts.add({ title: 'Failed to update default model', variant: 'error' })
     } finally {
@@ -293,6 +309,9 @@ function ProvidersPage() {
       )}
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
+        <ProviderOwnerSetup authenticatedApi={authenticatedApi} />
+        <ProviderConnectionsSection authenticatedApi={authenticatedApi} onModelAdded={fetchAll} />
+        <ProviderSubscriptionsSection authenticatedApi={authenticatedApi} onModelsChanged={fetchAll} />
         {/* Notices */}
         {(gatewayMode || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
@@ -318,7 +337,7 @@ function ProvidersPage() {
                   {quickModel
                     ? `${models.find((m) => m.id === quickModel)?.name ?? quickModel}.`
                     : 'none set.'}{' '}
-                  Used for fast tasks like generating chat titles. Click a model to set it.
+                  Used for fast tasks like generating chat titles. Click a model to set it. Personal connection models are excluded.
                 </span>
               </Notice>
             )}

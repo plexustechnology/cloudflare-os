@@ -72,6 +72,8 @@ export async function completeText(handle: ModelHandle, args: {
    * cache write.
    */
   cache?: boolean;
+  /** Owner-session summary purpose, enforced by the private model handle. */
+  purpose?: "sessionCompaction";
 }): Promise<string> {
   const messages: Message[] = args.messages ??
       [{ role: "user", content: args.prompt ?? "", timestamp: Date.now() }];
@@ -81,9 +83,10 @@ export async function completeText(handle: ModelHandle, args: {
   }, {
     maxTokens: args.maxTokens,
     signal: args.signal,
-    headers: args.headers,
+    ...(args.headers ? { headers: args.headers } : {}),
     thinking: args.thinking ?? false,
     ...(args.cache ? {} : { cacheRetention: "none" }),
+    ...(args.purpose ? { purpose: args.purpose } : {}),
   });
   const message = await stream.result();
   if (message.stopReason === "error" || message.stopReason === "aborted") {

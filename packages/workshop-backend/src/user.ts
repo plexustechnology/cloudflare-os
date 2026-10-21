@@ -1,5 +1,8 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
+import type { ProviderConnectionInput, ProviderSubscriptionInput, ProviderSubscriptionHandoff, ProviderSubscriptionCompletion } from "@gadgets/workshop-shared/provider-connections-api";
+import type { ProviderConnectionDescriptor, ProviderConnectionCatalog, ProviderSubscriptionDescriptor } from "@gadgets/workshop-shared/provider-connections";
+import { ProviderConnectionIndex } from "./provider-connections.js";
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiLegacyModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -63,7 +66,7 @@ export const CLOUDFLARE_VENDOR_ID = "cloudflare";
 const withholdSecret = (secret: string) => secret === "" ? "" : null;
 
 /** Withholds the non-empty secrets of `config`, for returning it to a client. */
-function redactModelConfig(config: AiModelConfig): RedactedAiModelConfig {
+function redactModelConfig(config: AiLegacyModelConfig): RedactedAiModelConfig {
   let {apiToken, extraHeaders, ...rest} = config;
   return {
     ...rest,
@@ -79,7 +82,7 @@ function redactModelConfig(config: AiModelConfig): RedactedAiModelConfig {
  * could point the model at its own server and receive them.
  */
 function resolveWithheldSecrets(
-    config: RedactedAiModelConfig, source?: AiModelConfig): AiModelConfig {
+    config: RedactedAiModelConfig, source?: AiLegacyModelConfig): AiLegacyModelConfig {
   let resolve = (secret: string | null, stored: string | undefined, what: string) => {
     if (secret !== null) return secret;
     if (!source) {
@@ -183,6 +186,7 @@ async function checkGatekeeperVendorFilter(
 
 /** Durable Object that stores information about a user. */
 export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+  #providerConnections: ProviderConnectionIndex;
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
@@ -191,6 +195,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
+    this.#providerConnections = new ProviderConnectionIndex(this.storage.providerConnections, env.AI_PROVIDER_ADAPTER, ctx.id.toString());
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
@@ -218,6 +223,99 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           });
         });
   }
+
+  /** Returns an immutable provisioning identifier, independent of profiles and adapter policy. */
+  async getProviderConnectionOwnerId(): Promise<string> { return this.ctx.id.toString(); }
+
+  /** Tests deployment policy using this object's immutable owner identifier. */
+  providerConnectionsAvailable(): Promise<boolean> { return this.#providerConnections.available(); }
+
+  /** Lists only the sanitized index belonging to this authenticated user. */
+  listProviderConnections(): Promise<ProviderConnectionDescriptor[]> { return this.#providerConnections.list(); }
+
+  /** Reserves one bounded connection slot before sending a protected credential once. */
+  createProviderConnection(input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.create(input);
+  }
+
+  /** Reserves a credential-free owner slot before cancellable key submission. */
+  reserveProviderConnection(input: Pick<ProviderConnectionInput, "label" | "consent">): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.reserve(input);
+  }
+
+  /** Constructs the only permitted token-free model record from current owner authority. */
+  async selectProviderConnectionModel(connectionId: string, expectedGeneration: number, model: string): Promise<AiChatAuthorInfo> {
+    const selected = await this.#providerConnections.selection(connectionId, expectedGeneration, model);
+    const profile: AiChatAuthorInfo = { type: "agent", id: `provider-connection/${connectionId}/${encodeURIComponent(model)}`,
+      name: `${model} (${selected.label} · OpenAI API billing)` };
+    this.storage.aiModels.put({ profile, config: { provider: "provider-connection", connectionId, model,
+      generation: selected.generation, transport: selected.transport, billing: selected.consent.billing } });
+    return profile;
+  }
+
+  /** Discover current subscription metadata and scoped choices without inference. */
+  discoverProviderSubscriptionModels(connectionId: string) {
+    return this.#providerConnections.discoverSubscription(connectionId);
+  }
+
+  /** Mint a token-free plan profile; atomically claim the owner notification after selection. */
+  async selectProviderSubscriptionModel(connectionId: string, generation: number, revision: number, model: string) {
+    const selected = await this.#providerConnections.subscriptionSelection(connectionId, generation, revision, model);
+    const profile: AiChatAuthorInfo = { type: "agent", id: `provider-connection/${connectionId}/${encodeURIComponent(model)}`,
+      name: `${selected.name} (${selected.connection.label} · ChatGPT plan)`, funding: "chatgpt-plan" };
+    this.storage.aiModels.put({ profile, config: { provider: "provider-connection", connectionId, model,
+      generation: selected.connection.generation, transport: "openai-chatgpt-responses", billing: "chatgpt-plan" } });
+    const showPlanWelcome = !this.storage.planWelcomeOffered.get();
+    if (showPlanWelcome) this.storage.planWelcomeOffered.put(true);
+    return { profile, showPlanWelcome };
+  }
+
+  /** Replaces an indexed connection with a generation-checked owner action. */
+  reconnectProviderConnection(connectionId: string, expectedGeneration: number, input: ProviderConnectionInput): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.reconnect(connectionId, expectedGeneration, input);
+  }
+
+  /** Returns sanitized metadata only for this user's indexed connection. */
+  getProviderConnectionStatus(connectionId: string): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.status(connectionId);
+  }
+
+  /** Invalidates local credentials through the fixed private service. */
+  disconnectProviderConnection(connectionId: string): Promise<ProviderConnectionDescriptor> {
+    return this.#providerConnections.disconnect(connectionId);
+  }
+
+  /** Discovers sanitized model identities without changing this user's inference model selection. */
+  discoverProviderConnectionModels(connectionId: string): Promise<ProviderConnectionCatalog> {
+    return this.#providerConnections.discover(connectionId);
+  }
+
+  /** Test subscription management policy for this immutable owner. */
+  providerSubscriptionsAvailable(): Promise<boolean> { return this.#providerConnections.subscriptionAvailable(); }
+  /** List subscription slots separately from API connections. */
+  listProviderSubscriptions(): Promise<ProviderSubscriptionDescriptor[]> { return this.#providerConnections.listSubscriptions(); }
+  /** Reserve sanitized consent before starting local helper setup. */
+  reserveProviderSubscription(input: ProviderSubscriptionInput): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.reserveSubscription(input); }
+  /** Validate captured intent consent against current native owner authority. */
+  prepareProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput): Promise<ProviderSubscriptionInput> {
+    return this.#providerConnections.prepareSubscription(connectionId, generation, input);
+  }
+  /** Admit one server-minted handoff through the private adapter binding. */
+  beginProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput, attemptId: string, expiresAt: number, callbackPort: number): Promise<ProviderSubscriptionHandoff> {
+    return this.#providerConnections.beginSubscription(connectionId, generation, input, attemptId, expiresAt, callbackPort);
+  }
+  /** Relay sealed callback text without reading its plaintext. */
+  completeProviderSubscription(connectionId: string, attemptId: string, text: string): Promise<ProviderSubscriptionCompletion> { return this.#providerConnections.completeSubscription(connectionId, attemptId, text); }
+  /** Fence one exact captured intent while preserving unrelated authority. */
+  cancelProviderSubscription(connectionId: string, generation: number, input: ProviderSubscriptionInput, attemptId: string, expiresAt: number): Promise<ProviderSubscriptionDescriptor> {
+    return this.#providerConnections.cancelSubscription(connectionId, generation, input, attemptId, expiresAt);
+  }
+  /** Read sanitized registration and pending recovery status. */
+  getProviderSubscriptionStatus(connectionId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.subscriptionStatus(connectionId); }
+  /** Cancel only the exact pending correlation selected by its owner. */
+  cancelPendingProviderSubscription(connectionId: string, attemptId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.cancelPendingSubscription(connectionId, attemptId); }
+  /** Delete local subscription authority through the fixed private service. */
+  disconnectProviderSubscription(connectionId: string): Promise<ProviderSubscriptionDescriptor> { return this.#providerConnections.disconnectSubscription(connectionId); }
 
   async authenticate(token: string): Promise<void> {
     let tokenBytes: Uint8Array;
@@ -474,9 +572,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
                  copySecretsFrom?: string): Promise<void> {
+    if (profile.funding !== undefined || profile.id.startsWith("provider-connection/")) {
+      throw new Error("Personal models require explicit provider connection selection.");
+    }
+    if (config.provider === "deployment-openai-compatible" || profile.id.startsWith("deployment-openai-compatible/")) {
+      throw new Error("Deployment OpenAI-compatible models are configured by the operator.");
+    }
     let models = await getGatewayModels(this.env);
     models?.refuseUserModel();
-    let source: AiModelConfig | undefined;
+    let source: AiLegacyModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
       source = this.#getHandAddedModel(copySecretsFrom, models).config;
     }
@@ -503,16 +607,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /** The stored record of a model the user added, throwing for AI Gateway models. */
-  #getHandAddedModel(id: string, models: GatewayModels | null): UserAiModelRecord {
+  #getHandAddedModel(id: string, models: GatewayModels | null): {profile: AiChatAuthorInfo, config: AiLegacyModelConfig} {
     let record = this.storage.aiModels.get(id);
     // A stored model sharing a gateway model's ID is shadowed by it (see listModels()).
-    if (!record || models?.get(id)) {
+    if (!record || models?.get(id) || record.config.provider === "provider-connection" || record.config.provider === "deployment-openai-compatible") {
       throw new Error(`No such hand-added model: ${id}`);
     }
-    return record;
+    return { profile: record.profile, config: record.config };
   }
 
   #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
+    if (profile.funding !== undefined || profile.id.startsWith("provider-connection/") || config.provider === "provider-connection") {
+      throw new Error("Personal models require explicit provider connection selection.");
+    }
+    if (config.provider === "deployment-openai-compatible" || profile.id.startsWith("deployment-openai-compatible/")) {
+      throw new Error("Deployment OpenAI-compatible models are configured by the operator.");
+    }
     if (models && config.provider !== "azure-foundry" && !models.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
@@ -532,6 +642,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async deleteModel(id: string): Promise<void> {
     // In AI Gateway mode, don't allow deleting the gateway's own models, whatever their mode.
+    if (id.startsWith("deployment-openai-compatible/")) throw new Error("Cannot delete a deployment model.");
     let model = (await getGatewayModels(this.env))?.get(id);
     if (model) throw new Error(`Cannot delete built-in model "${model.name}".`);
 
@@ -539,12 +650,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async setQuickModel(id: string | null): Promise<void> {
+    if (id?.startsWith("provider-connection/") || (id && this.storage.aiModels.get(id)?.config.provider === "provider-connection")) {
+      throw new Error("connection_forbidden");
+    }
     this.storage.quickModel.put(id);
   }
 
   async getQuickModel(): Promise<null | string> {
     let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
+    const model = result ? this.storage.aiModels.get(result) : undefined;
+    if (result && model && model.config.provider !== "provider-connection") {
       return result;
     } else {
       return null;
@@ -673,13 +788,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    return this.#getChatContext(modelId, await getGatewayModels(this.env));
+    return this.#getChatContext(modelId, modelId?.startsWith("provider-connection/") ? null : await getGatewayModels(this.env));
   }
 
   #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
+    if (modelId?.startsWith("provider-connection/")) {
+      result.aiModel = this.storage.aiModels.get(modelId);
+      if (result.aiModel?.config.provider !== "provider-connection") throw new Error("model_unavailable");
+      // Personal resolution neither consults gateway credentials nor selects auxiliary funding.
+      return result;
+    }
     if (modelId) {
       result.aiModel = this.#resolveModel(modelId, models);
       if (!result.aiModel) {
@@ -693,14 +814,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Resolve the quick model (used for lightweight tasks like title generation).
-    if (models) {
+    if (result.aiModel?.config.provider === "provider-connection") return result;
+    if (result.aiModel?.config.provider === "deployment-openai-compatible") {
+      result.quickModel = result.aiModel.config;
+    } else if (models) {
       // In AI Gateway mode, always use the hardcoded quick model.
       result.quickModel = models.gateway.getQuickModelConfig();
     } else {
       let quickModelId = this.storage.quickModel.get();
       if (quickModelId) {
         let quickModel = this.storage.aiModels.get(quickModelId);
-        if (quickModel) {
+        if (quickModel && quickModel.config.provider !== "provider-connection") {
           result.quickModel = quickModel.config;
         }
       }
@@ -721,6 +845,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // composer does with its stored choice, and otherwise the first available model.
     let models = await getGatewayModels(this.env);
     let selectedModelId = existingChatModelId;
+    const selectedDeploymentId = selectedModelId?.startsWith("deployment-openai-compatible/") ||
+      (selectedModelId && this.#resolveModel(selectedModelId, models))
+      ? selectedModelId : this.storage.preferredModel.get();
+    if (selectedDeploymentId?.startsWith("deployment-openai-compatible/") && !models?.resolve(selectedDeploymentId)) {
+      throw new Error("Selected deployment OpenAI-compatible model is unavailable.");
+    }
     if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
       let offered = this.#listModels(models);
       let preferredModel = this.storage.preferredModel.get();

@@ -1,3 +1,4 @@
+import type { ProviderConnectionReservation } from "../provider-connections.js";
 // The User Durable Object's storage schema: `makeUserStorage()` and the record types it stores.
 //
 // Everything a user's Durable Object persists is declared in this one file, so that a change to
@@ -161,6 +162,8 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
     },
     singletons: {
+      providerConnections: [] as ProviderConnectionReservation[],
+      planWelcomeOffered: false,
       // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
       // null until a Cloudflare account is connected and resolved.
       cloudflareBilling: <CloudflareBilling | null>null,

@@ -1,10 +1,11 @@
 import {
-  AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel,
+  AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiLegacyModelConfig, AiModelProvider, GatewayModel,
   GatewayModelMode, HTTPS_ONLY_PROVIDERS, ReasoningLevel, SUGGESTED_MODELS,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
+import { deploymentOpenAiModelConfig, readDeploymentOpenAiConfig, type DeploymentOpenAiConfig } from "./deployment-openai.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
 //
@@ -37,7 +38,7 @@ function tokenLimits({ contextWindow, outputLimit }
 }
 
 /** The config a gateway model runs with, before what its admin set for it. */
-export function gatewayModelConfig(model: AdminModel): AiModelConfig {
+export function gatewayModelConfig(model: AdminModel): AiLegacyModelConfig {
   return {
     provider: model.provider,
     model: model.id,
@@ -58,7 +59,7 @@ export function gatewayModelConfig(model: AdminModel): AiModelConfig {
  * both built here, so that the test asks what the added model would be asked.
  */
 export function gatewayRunConfig(
-    model: AdminModel, reasoning: ReasoningLevel | null, budget?: number): AiModelConfig {
+    model: AdminModel, reasoning: ReasoningLevel | null, budget?: number): AiLegacyModelConfig {
   return {
     ...gatewayModelConfig(model),
     ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
@@ -95,8 +96,10 @@ export class AiGatewayConfig {
   /** The providers CF_AI_GATEWAY_PROVIDERS lists, which an admin can add to (see GatewayModels). */
   readonly providers: Set<string>;
   readonly azureFoundry?: { endpoint: string; model: string; apiKey: string };
+  readonly deploymentOpenAi?: DeploymentOpenAiConfig;
 
   constructor(env: Cloudflare.Env) {
+    this.deploymentOpenAi = readDeploymentOpenAiConfig(env);
     this.gateway = env.CF_AI_GATEWAY!;
     if (!env.CF_AI_GATEWAY_ACCOUNT_ID) {
       throw new Error("CF_AI_GATEWAY_ACCOUNT_ID is required when CF_AI_GATEWAY is set.");
@@ -153,7 +156,7 @@ export class AiGatewayConfig {
   /**
    * Get the AiModelConfig for the quick model (used for title generation).
    */
-  getQuickModelConfig(): AiModelConfig | undefined {
+  getQuickModelConfig(): AiLegacyModelConfig | undefined {
     // Always use Workers AI here.
     return {
       provider: "cloudflare",
@@ -236,6 +239,12 @@ export class GatewayModels {
         if (model.provider === provider && !isCatalogModel(model.id)) add(model, "enabled", true);
       }
     }
+    const deployment = gateway.deploymentOpenAi;
+    if (deployment) {
+      add({ provider: "deployment-openai-compatible", id: `deployment-openai-compatible/${deployment.model}`,
+        name: deployment.name, contextWindow: deployment.contextWindow, outputLimit: deployment.outputLimit },
+        "enabled", false);
+    }
     this.all = [...this.#byId.values()];
   }
 
@@ -283,9 +292,12 @@ export class GatewayModels {
    * admin set and nothing for what is unset, so that an untouched model runs exactly as it does
    * with no admin settings at all.
    */
-  runConfig(id: string): AiModelConfig | undefined {
+  runConfig(id: string): AiLegacyModelConfig | undefined {
     let model = this.#byId.get(id);
     if (!model) return undefined;
+    if (model?.provider === "deployment-openai-compatible") {
+      return this.gateway.deploymentOpenAi && deploymentOpenAiModelConfig(this.gateway.deploymentOpenAi);
+    }
     let config = gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
         model.settings?.compactionInputBudget);
     if (model.provider === "azure-foundry") {

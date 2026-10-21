@@ -3072,6 +3072,7 @@ async function runAgentPass(
           messages: summaryMessages,
           maxTokens: maxOutputTokens,
           signal: abortSignal,
+          ...(modelConfig.provider === "provider-connection" ? { purpose: "sessionCompaction" as const } : {}),
         })).trim();
         // An empty summary would discard the compacted history, so keep the history instead.
         if (!summary) throw new Error("Compaction produced an empty summary.");
@@ -3094,7 +3095,7 @@ async function runAgentPass(
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
         abortSignal.throwIfAborted();
-        if (compactionTurn) throw error;
+        if (compactionTurn || modelConfig.provider === "provider-connection") throw error;
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
         });
@@ -4036,7 +4037,9 @@ async function runAgentPass(
         if (await hooks.commitAgentStep(chatId, author, msgs,
             {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
              worktreeCommits, blueprintMerges},
-            message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
+            modelConfig.provider === "provider-connection"
+              ? message.usage.totalTokens === 0 ? undefined : { ...message.usage, cost: zeroUsage().cost }
+              : message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
           ++nextChangeId;
         }
 

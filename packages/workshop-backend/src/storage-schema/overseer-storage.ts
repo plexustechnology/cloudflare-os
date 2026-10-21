@@ -21,7 +21,7 @@ import type {
 import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
 import {
   actionChangeTime,
-  type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
+  type AiConnectionModelConfig, type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
@@ -667,7 +667,19 @@ export type CompactionCheckpoint = {
  * Note we deliberately do NOT store the resolved `AiModelConfig` here, because it contains a secret
  * API token. Instead we store enough to re-fetch it from the initiator's user DO on resume.
  */
+export type PersonalTurnRecord = {
+  chatId: number;
+  initiatorUserId: string;
+  turnId: string;
+  purpose: "ownerInteractive" | "approvalResume";
+  fromSequence: number;
+  config: AiConnectionModelConfig;
+  state: "running" | "suspended" | "ended" | "recovery-required";
+};
+
 export type ActiveAgentRecord = {
+  /** Captured owner authority, never refreshed implicitly on resume. */
+  personalTurn?: PersonalTurnRecord;
   chatId: number;
   /**
    * Hex durable object ID of the initiator's user DO, used to re-resolve the model config and for
@@ -1305,6 +1317,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // Tracks in-progress agent turns so they can be resumed after a server restart. See
       // `ActiveAgentRecord`.
+      personalTurns: collection<PersonalTurnRecord>()({ primaryKey: "chatId" }),
       activeAgents: collection<ActiveAgentRecord>()({
         primaryKey: "chatId"
       }),

@@ -6,6 +6,7 @@ import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/cod
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
+import { PROVIDER_CONNECTION_PLANNING_WINDOW, PROVIDER_CONNECTION_OUTPUT_LIMIT } from "@gadgets/workshop-shared/provider-inference";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -29,7 +30,16 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
  */
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
+  if (config.provider === "provider-connection") return {
+    inputBudget: PROVIDER_CONNECTION_PLANNING_WINDOW - PROVIDER_CONNECTION_OUTPUT_LIMIT,
+    maxOutputTokens: PROVIDER_CONNECTION_OUTPUT_LIMIT,
+  };
   let model = SUGGESTED_MODELS[config.provider][config.model];
+  if (config.provider === "deployment-openai-compatible") return {
+    // References are minted by the deployment catalog; transport revalidates current env limits.
+    inputBudget: (config.contextWindow ?? 65536) - (config.outputLimit ?? 4096),
+    maxOutputTokens: config.outputLimit ?? 4096,
+  };
   let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
   let inputLimit = (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
