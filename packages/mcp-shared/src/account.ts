@@ -23,6 +23,7 @@ import {
 import {
   auth,
   refreshAuthorization,
+  selectResourceURL,
   type OAuthClientProvider,
   type OAuthDiscoveryState,
   type StoredOAuthClientInformation,
@@ -1035,12 +1036,23 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       this.validateConnection({ stage: "discovery", server, discovery });
       this.validateConnection({ stage: "client", server, client });
       stage = "token-setup";
+      // Match SDK auth(): validate the discovered resource and preserve its exact identifier.
+      // The transport endpoint can carry routing parameters that aren't part of the OAuth grant.
+      const provider = this.oauthProvider(server, generation, false);
+      const resourceMetadata = discovery.resourceMetadata;
+      const selectedResource = await selectResourceURL(server.endpoint, provider, resourceMetadata);
+      const resource = selectedResource && resourceMetadata && !provider.validateResourceURL
+        ? resourceMetadata.resource
+        : selectedResource;
+      if (!this.isCurrentConnection(server, generation)) {
+        throw new Error("Discarded a token refresh for a previous MCP connection.");
+      }
       const fetchToken = sdkFetch(this.fetchOptions());
       const refreshed = await refreshAuthorization(discovery.authorizationServerUrl, {
         metadata: discovery.authorizationServerMetadata,
         clientInformation: client,
         refreshToken,
-        resource: new URL(server.endpoint),
+        resource,
         fetchFn: async (url, init) => {
           stage = "token-request";
           const response = await fetchToken(url, init);

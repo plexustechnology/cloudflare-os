@@ -962,6 +962,90 @@ describe("connect initiation nonce", () => {
   });
 });
 
+describe("OAuth refresh resource selection", () => {
+  const endpoint = "https://mcp.example/api/ExecMcp?client=public-client";
+
+  function expiredAccount(resource?: string) {
+    const context = fakeContext();
+    const connected = server(endpoint);
+    const tokens = {
+      access_token: "expired-access", token_type: "Bearer", refresh_token: "live-refresh",
+      issuer: "https://auth.example", expiresAt: Date.now() - 1000,
+    };
+    const credentialsExpired = vi.fn(async () => {});
+    context.storage.kv.put("server", connected);
+    context.storage.kv.put("tokens", tokens);
+    context.storage.kv.put("mcpSessionId", "live-session");
+    context.storage.kv.put("callback", { credentialsExpired });
+    context.storage.kv.put("oauthDiscovery", {
+      authorizationServerUrl: "https://auth.example",
+      authorizationServerMetadata: {
+        issuer: "https://auth.example", authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+      },
+      ...(resource === undefined ? {} : { resourceMetadata: { resource } }),
+    });
+    context.storage.kv.put("oauthClient", { client_id: "public-client", issuer: "https://auth.example" });
+    return { context, tokens, credentialsExpired, account: new OAuthFlowAccount(context as never, {}) };
+  }
+
+  it.each([
+    { name: "canonical resource without the endpoint's client query", resource: "https://mcp.example/api/ExecMcp" },
+    { name: "raw pathless resource without an added slash", resource: "https://mcp.example" },
+    { name: "legitimate metadata resource query", resource: "https://mcp.example/api/ExecMcp?aud=customers" },
+  ])("refreshes using the $name", async ({ resource }) => {
+    const flow = expiredAccount(resource);
+    const forms: URLSearchParams[] = [];
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      expect(String(input)).toBe("https://auth.example/token");
+      forms.push(new URLSearchParams(String(init?.body)));
+      return Response.json({ access_token: "fresh-access", refresh_token: "fresh-refresh", token_type: "Bearer", expires_in: 3600 });
+    });
+
+    await expect(flow.account.getConnection(endpoint)).resolves.toMatchObject({ authorization: "fresh-access" });
+
+    expect(forms).toHaveLength(1);
+    expect(forms[0].get("resource")).toBe(resource);
+    expect(forms[0].get("resource")).not.toContain("client=public-client");
+    expect(forms[0].get("grant_type")).toBe("refresh_token");
+    expect(flow.context.storage.kv.get("tokens")).toMatchObject({ access_token: "fresh-access", refresh_token: "fresh-refresh" });
+    expect(flow.context.storage.kv.get("mcpSessionId")).toBe("live-session");
+    expect(flow.credentialsExpired).not.toHaveBeenCalled();
+  });
+
+  it("omits resource when protected resource metadata is absent, matching initial SDK authorization", async () => {
+    const flow = expiredAccount();
+    const forms: URLSearchParams[] = [];
+    vi.stubGlobal("fetch", async (_input: string, init?: RequestInit) => {
+      forms.push(new URLSearchParams(String(init?.body)));
+      return Response.json({ access_token: "fresh-access", token_type: "Bearer", expires_in: 3600 });
+    });
+
+    await expect(flow.account.getConnection(endpoint)).resolves.toMatchObject({ authorization: "fresh-access" });
+
+    expect(forms).toHaveLength(1);
+    expect(forms[0].has("resource")).toBe(false);
+    expect(flow.context.storage.kv.get("tokens")).toMatchObject({ refresh_token: "live-refresh" });
+    expect(flow.credentialsExpired).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://foreign.example/api/ExecMcp", "https://mcp.example/unrelated",
+  ])("rejects mismatched protected resource %s before dispatching or mutating tokens", async resource => {
+    const flow = expiredAccount(resource);
+    const before = structuredClone(flow.tokens);
+    const fetch = vi.fn(async () => Response.json({ access_token: "must-not-be-issued", token_type: "Bearer" }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(flow.account.getConnection(endpoint)).rejects.toThrow("MCP_OAUTH_REFRESH");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(flow.context.storage.kv.get("tokens")).toEqual(before);
+    expect(flow.context.storage.kv.get("mcpSessionId")).toBe("live-session");
+    expect(flow.credentialsExpired).not.toHaveBeenCalled();
+  });
+});
+
 describe("resolveConnectTarget", () => {
   it("accepts the first endpoint offered", () => {
     expect(resolveConnectTarget(undefined, server("https://a.example/mcp")))
