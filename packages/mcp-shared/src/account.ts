@@ -41,8 +41,10 @@ import {
 } from "./connect-nonce.js";
 import {
   isCredentialRejection,
+  oauthRefreshDiagnostic,
   revokeToken,
   safeOAuthError,
+  type OAuthRefreshStage,
   type OAuthTokens,
 } from "./oauth.js";
 import { fetchOptions, isAllowedUrl, sdkFetch, type FetchOptions } from "./fetch.js";
@@ -897,8 +899,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         client: parked.client,
         discovery: parked.discovery,
       }, Date.now());
-      handoff = await callback.reconnectComplete(
-        stageId, tokens?.expiresAt ? new Date(tokens.expiresAt) : undefined);
+      // Access tokens are refreshable; their expiry must not retire the Workshop account.
+      handoff = await callback.reconnectComplete(stageId);
     } else {
       this.setSessionId(sessionId);
       handoff = await callback.complete(this.mintAccount());
@@ -1027,15 +1029,25 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     server: ConnectedServer, generation: number, refreshToken: string,
     discovery: OAuthDiscoveryState, client: StoredOAuthClientInformation,
   ): Promise<string> {
+    let stage: OAuthRefreshStage = "connection-policy";
+    let responseStatus: number | undefined;
     try {
       this.validateConnection({ stage: "discovery", server, discovery });
       this.validateConnection({ stage: "client", server, client });
+      stage = "token-setup";
+      const fetchToken = sdkFetch(this.fetchOptions());
       const refreshed = await refreshAuthorization(discovery.authorizationServerUrl, {
         metadata: discovery.authorizationServerMetadata,
         clientInformation: client,
         refreshToken,
         resource: new URL(server.endpoint),
-        fetchFn: sdkFetch(this.fetchOptions()),
+        fetchFn: async (url, init) => {
+          stage = "token-request";
+          const response = await fetchToken(url, init);
+          responseStatus = response.status;
+          stage = "token-response";
+          return response;
+        },
       });
       if (!this.isCurrentConnection(server, generation)) {
         throw new Error("Discarded credentials refreshed for a previous MCP connection.");
@@ -1047,6 +1059,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         issuer: client.issuer,
         expiresAt: Date.now() + (refreshed.expires_in ?? DEFAULT_TOKEN_LIFETIME_S) * 1000,
       };
+      stage = "token-policy";
       this.validateConnection({ stage: "tokens", server, tokens });
       this.ctx.storage.kv.put<OAuthTokens>("tokens", tokens);
       return refreshed.access_token;
@@ -1058,6 +1071,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         // oxlint-disable-next-line eslint/preserve-caught-error -- OAuth errors may contain credentials.
         throw new Error("Ignored a token refresh from a previous MCP connection.", { cause: safeError });
       }
+      const diagnostic = oauthRefreshDiagnostic(stage, responseStatus, err);
       // Only a verdict on the credential latches the account as expired. Marking it on any failure
       // meant one 5xx or dropped connection at the token endpoint demanded a reconnect for an
       // account whose refresh token was still perfectly good, and `noteCredentialsExpired` fires at
@@ -1065,13 +1079,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       if (!isCredentialRejection(err)) {
         // oxlint-disable-next-line eslint/preserve-caught-error -- OAuth errors may contain credentials.
         throw new Error(
-          "This MCP connection could not be refreshed just now. Please try again.",
+          `This MCP connection could not be refreshed just now. Please try again. ${diagnostic}`,
           { cause: safeError });
       }
       await this.noteCredentialsExpired(server.endpoint, generation);
       // oxlint-disable-next-line eslint/preserve-caught-error -- OAuth errors may contain credentials.
       throw new Error(
-        "This MCP connection could not be refreshed. Please reconnect the account.",
+        `This MCP connection could not be refreshed. Please reconnect the account. ${diagnostic}`,
         { cause: safeError });
     }
   }

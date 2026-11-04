@@ -16,9 +16,33 @@ const CREDENTIAL_REJECTIONS = new Set([
   "invalid_client",
   "unauthorized_client",
   "invalid_scope",
+  "interaction_required",
+  "login_required",
+  "consent_required",
 ]);
 
-/** Only an authorization-server verdict retires a credential; transport failures remain retryable. */
+/** Fixed stages tracked locally while renewing an OAuth grant. */
+export type OAuthRefreshStage = "connection-policy" | "token-setup" | "token-request" | "token-response" | "token-policy";
+
+/** Only source-owned categories enter refresh diagnostics; provider text and unknown codes are discarded. */
+export function oauthRefreshDiagnostic(stage: OAuthRefreshStage, status: number | undefined, error: unknown): string {
+  const http = status === undefined ? "none" : !Number.isInteger(status) ? "other" : status >= 200 && status < 300 ? "2xx"
+    : status >= 300 && status < 400 ? "3xx" : status >= 400 && status < 500 ? "4xx"
+    : status >= 500 && status < 600 ? "5xx" : "other";
+  let code = "unknown";
+  if (OAuthError.isInstance(error)) {
+    switch (error.code) {
+      case "invalid_request": case "invalid_grant": case "invalid_client": case "unauthorized_client":
+      case "invalid_scope": case "invalid_target": case "invalid_resource": case "access_denied":
+      case "interaction_required": case "login_required": case "consent_required":
+      case "temporarily_unavailable": case "server_error": case "too_many_requests":
+        code = error.code;
+    }
+  }
+  return `[MCP_OAUTH_REFRESH stage=${stage} http=${http} oauth=${code}]`;
+}
+
+/** Credential rejection or an explicit interactive-sign-in requirement retires a grant; outages remain retryable. */
 export function isCredentialRejection(err: unknown): boolean {
   return OAuthError.isInstance(err) && CREDENTIAL_REJECTIONS.has(String(err.code));
 }

@@ -534,6 +534,8 @@ describe("connect initiation nonce", () => {
     // The Workshop was told which stage this completion produced, and only that id commits it.
     const stageId = reconnectComplete.mock.calls[0][0];
     expect(stageId).toMatch(/^[0-9a-f]{64}$/);
+    // Access-token expiry is internal; advertising it here disables a still-refreshable account.
+    expect(reconnectComplete).toHaveBeenCalledWith(stageId);
     await expect(account.commitReconnect("0".repeat(64))).rejects.toThrow(/No reconnect is awaiting/);
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("old-token");
