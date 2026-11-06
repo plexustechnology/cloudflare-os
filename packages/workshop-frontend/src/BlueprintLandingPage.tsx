@@ -10,6 +10,7 @@ import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, 
 import { useAuth } from './useAuth'
 import LoginPage from './LoginPage'
 import { normalizeResourceUrl } from './resourceMatching'
+import { findBlueprintResource } from './features/blueprint-bindings/blueprintResources'
 import {
   BLUEPRINT_ARCHIVE_EXTENSION,
   makeBlueprintFilename,
@@ -358,6 +359,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   }, [id, authenticatedApi])
 
   const findMatchingAccounts = useCallback((binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>) => {
+    // This path reuses the source resource URL automatically. Cross-deployment type
+    // matches must instead open the destination configurator and create a local grant.
     return accounts.filter(account =>
       account.vendorId.toLowerCase() === binding.gatekeeperName.toLowerCase() &&
       account.credentialsValid &&
@@ -1253,7 +1256,8 @@ function BlueprintBindingSummaryCard({
       ? 'AI Model'
       : 'Agent'
   const resource = binding.type === 'gatekeeper'
-    ? vendor?.supportedResources.find(r => r.urlPattern === binding.typeUrlPattern)
+    ? findBlueprintResource(binding.gatekeeperName, binding.typeUrlPattern,
+      vendor?.supportedResources ?? [], window.location.origin)
     : null
   const suggestion = binding.type === 'gatekeeper'
     ? binding.resourceUrl
@@ -1508,13 +1512,15 @@ function BlueprintGatekeeperBindingField({
     [vendors, binding.gatekeeperName],
   )
   const resource = useMemo(
-    () => vendor?.supportedResources.find(r => r.urlPattern === binding.typeUrlPattern) ?? null,
-    [vendor, binding.typeUrlPattern],
+    () => findBlueprintResource(binding.gatekeeperName, binding.typeUrlPattern,
+      vendor?.supportedResources ?? [], window.location.origin) ?? null,
+    [vendor, binding.gatekeeperName, binding.typeUrlPattern],
   )
 
   const matchingAccounts = useMemo(() => accounts.filter(account =>
     account.vendorId === binding.gatekeeperName &&
-    account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern)
+    Boolean(findBlueprintResource(binding.gatekeeperName, binding.typeUrlPattern,
+      account.supportedResources, window.location.origin))
   ), [accounts, binding.gatekeeperName, binding.typeUrlPattern])
 
   const selectedAccountId = (value as any).accountId ?? null
