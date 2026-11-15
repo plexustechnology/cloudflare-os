@@ -1777,6 +1777,14 @@ export type AiLegacyModelConfig = {
    * deployment's admin added to its AI Gateway.
    */
   capabilities?: GatewayModelCapabilities;
+
+  /**
+   * Set only on a deployment's own Azure Foundry model (see GatewayModels.runConfig), whose
+   * `apiToken` is then empty: the key is read from the environment on each request instead, so
+   * that a config, which a model binding stores, never holds it, and a rotated key reaches every
+   * binding. Never kept on a model a user added.
+   */
+  deploymentCredentials?: "azure-foundry";
 };
 
 /**
@@ -1788,7 +1796,7 @@ export type AiLegacyModelConfig = {
  */
 export type RedactedAiModelConfig = Omit<AiLegacyModelConfig,
     "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
-    "capabilities"> & {
+    "capabilities" | "deploymentCredentials"> & {
   /** `AiModelConfig.apiToken`, or null if withheld. */
   apiToken: string | null;
 
