@@ -451,6 +451,33 @@ describe("getModel direct routing (no gateway)", () => {
     expect(request.headers.get("authorization")).toBeNull();
     expect(request.headers.get("cf-aig-metadata")).toBeNull();
   }, 15000);
+
+  const AZURE_ENV = {
+    AZURE_FOUNDRY_ENDPOINT: "https://deployment.example/openai/v1",
+    AZURE_FOUNDRY_MODEL: "gpt-5.6-sol-1",
+    AZURE_FOUNDRY_API_KEY: "current-deployment-key",
+  };
+
+  it("sends the deployment's Azure Foundry model with the environment's current key", async () => {
+    const handle = getModel(env(AZURE_ENV), {
+      provider: "azure-foundry", model: "gpt-5.6-sol-1", apiToken: "",
+      apiUrl: "https://deployment.example/openai/v1", deploymentCredentials: "azure-foundry",
+    }, INITIATOR);
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://deployment.example/openai/v1/responses");
+    expect(request.headers.get("api-key")).toBe("current-deployment-key");
+  }, 15000);
+
+  it("sends a user's own Azure Foundry model with its own token, whatever the deployment's",
+      async () => {
+    const handle = getModel(env(AZURE_ENV), {
+      provider: "azure-foundry", model: "gpt-5.6-sol-1", apiToken: "user-own-key",
+      apiUrl: "https://user.example/openai/v1",
+    }, INITIATOR);
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://user.example/openai/v1/responses");
+    expect(request.headers.get("api-key")).toBe("user-own-key");
+  }, 15000);
   it.each([
     ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
     ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
@@ -1475,6 +1502,53 @@ describe("LanguageModelGatekeeper.startSession", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  describe("for the deployment's Azure Foundry model", () => {
+    const AZURE_ID = "gpt-5.6-sol-1";
+    const AZURE_ENV = {
+      AZURE_FOUNDRY_ENDPOINT: "https://deployment.example/openai/v1",
+      AZURE_FOUNDRY_MODEL: AZURE_ID,
+      AZURE_FOUNDRY_API_KEY: "current-deployment-key",
+    };
+    const sentKey = async (config: AiModelConfig, admin: Partial<AdminConfig> = {}) => {
+      capturedRequests.length = 0;
+      vi.stubGlobal("fetch", fetchStub);
+      try {
+        const binding = await startSession(config, admin, AZURE_ENV).session;
+        await expect(binding.run({ prompt: "hello" })).rejects.toThrow();
+        return { url: capturedRequests[0].url, key: capturedRequests[0].headers.get("api-key") };
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    };
+
+    it("runs a binding minted without the key with the environment's", async () => {
+      expect(await sentKey({ provider: "azure-foundry", model: AZURE_ID, apiToken: "",
+        apiUrl: "https://deployment.example/openai/v1", deploymentCredentials: "azure-foundry" }))
+          .toEqual({ url: "https://deployment.example/openai/v1/responses",
+            key: "current-deployment-key" });
+    }, 15000);
+
+    // Bindings minted before the key left the stored config hold the key of that time.
+    it("runs a binding that holds a stale key with the environment's current one", async () => {
+      expect(await sentKey({ provider: "azure-foundry", model: AZURE_ID,
+        apiToken: "stale-rotated-key", apiUrl: "https://deployment.example/openai/v1" }))
+          .toEqual({ url: "https://deployment.example/openai/v1/responses",
+            key: "current-deployment-key" });
+    }, 15000);
+
+    it("still refuses it once the admin disabled it", async () => {
+      await expect(startSession({ provider: "azure-foundry", model: AZURE_ID, apiToken: "" },
+          { modelModes: { [AZURE_ID]: "disabled" } }, AZURE_ENV).session).rejects.toThrow(
+          "is disabled on this deployment by an administrator.");
+    });
+
+    it("runs a model a user added under the provider with its own token", async () => {
+      expect(await sentKey({ provider: "azure-foundry", model: "my-azure-deployment",
+        apiToken: "user-own-key", apiUrl: "https://user.example/openai/v1" }))
+          .toEqual({ url: "https://user.example/openai/v1/responses", key: "user-own-key" });
+    }, 15000);
   });
 
   it("does not read the admin config outside AI Gateway mode", async () => {

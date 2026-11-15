@@ -303,8 +303,12 @@ export class GatewayModels {
     if (model.provider === "azure-foundry") {
       const azure = this.gateway.azureFoundry;
       if (!azure || model.id !== azure.model) return undefined;
-      config.apiToken = azure.apiKey;
+      // The key stays out of the config, which a model binding stores (see
+      // newAiModelGatekeeper): getModel() reads the current one from the environment per request
+      // (see withDeploymentCredentials).
+      config.apiToken = "";
       config.apiUrl = azure.endpoint;
+      config.deploymentCredentials = "azure-foundry";
     }
     return config;
   }
@@ -345,6 +349,25 @@ export class GatewayModels {
       throw new Error(`"${model.id}" is already an added model.`);
     }
   }
+}
+
+/**
+ * `config` as it is sent: with the deployment's current Azure Foundry key and endpoint, read from
+ * the environment, when it is the deployment's own Azure Foundry model (see
+ * GatewayModels.runConfig), and otherwise unchanged, so that a model a user added under the
+ * provider runs with its own token. Throws for a deployment model the environment no longer
+ * provides.
+ */
+export function withDeploymentCredentials(
+    env: Cloudflare.Env, config: AiLegacyModelConfig): AiLegacyModelConfig {
+  if (config.provider !== "azure-foundry" || config.deploymentCredentials !== "azure-foundry") {
+    return config;
+  }
+  const azure = getAiGatewayConfig(env)?.azureFoundry;
+  if (!azure || config.model !== azure.model) {
+    throw new Error("This deployment no longer provides the Azure Foundry model.");
+  }
+  return { ...config, apiToken: azure.apiKey, apiUrl: azure.endpoint };
 }
 
 /**
