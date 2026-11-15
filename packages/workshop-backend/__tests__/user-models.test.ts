@@ -118,6 +118,7 @@ describe("UserDurableObject model editing", () => {
     const smuggled = {
       reasoning: "max", compactionInputBudget: 5, behavesLike: "gpt-6-sol",
       capabilities: { imageInput: true, reasoningLevels: ["high"] },
+      deploymentCredentials: "azure-foundry",
     };
     const other = { type: "agent" as const, id: "other", name: "Other" };
     await user.addModel(other, { ...CONFIG, model: "other", ...smuggled } as typeof CONFIG);
@@ -128,6 +129,20 @@ describe("UserDurableObject model editing", () => {
         typeof CONFIG);
     expect(await stored(PROFILE.id)).toStrictEqual(
         { profile: PROFILE, config: { ...CONFIG, contextWindow: 200000 } });
+  });
+
+  // A stored model never runs with the deployment's own credentials, whatever it claims.
+  it("resolves a stored model without the deployment's credentials marker", async () => {
+    const { inDo } = await userWithModel();
+    await inDo(async user => {
+      const claimed = { type: "agent" as const, id: "claimed", name: "Claimed" };
+      const config = { provider: "azure-foundry" as const, model: "gpt-5.6-sol-1", apiToken: "",
+        apiUrl: "https://proxy.example/v1" };
+      (user as unknown as { storage: { aiModels: { put(record: UserAiModelRecord): void } } })
+          .storage.aiModels.put(
+              { profile: claimed, config: { ...config, deploymentCredentials: "azure-foundry" } });
+      expect((await user.getChatContext(claimed.id)).aiModel?.config).toStrictEqual(config);
+    });
   });
 
   it("requires every secret when adding without a source", async () => {
