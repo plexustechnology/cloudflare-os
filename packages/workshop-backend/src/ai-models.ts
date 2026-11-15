@@ -28,6 +28,7 @@ import {
 import { traceChat } from "./agent-tracing.js";
 import {
   AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+  withDeploymentCredentials,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -574,7 +575,9 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
     return getProviderConnectionModel(env, config, options.connection);
   }
   if (config.provider === "deployment-openai-compatible") return getDeploymentOpenAiModel(env, config);
-  if (config.provider === "azure-foundry") return getModelDirect(config, options.sessionAffinity);
+  if (config.provider === "azure-foundry") {
+    return getModelDirect(withDeploymentCredentials(env, config), options.sessionAffinity);
+  }
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -939,6 +942,12 @@ export class LanguageModelGatekeeper
     let models = await getGatewayModels(this.env);
     if (models?.get(config.model)?.provider === config.provider) {
       models.refuseDisabled(config.model);
+      // The deployment's Azure Foundry model runs with the key the environment holds now. A
+      // binding minted while the key was still baked into the config holds that copy, which may
+      // since have been rotated, so it is dropped here too (see withDeploymentCredentials).
+      if (config.provider === "azure-foundry") {
+        config = { ...config, apiToken: "", deploymentCredentials: "azure-foundry" };
+      }
     } else {
       models?.refuseUserModel(this.ctx.props.displayName);
     }
