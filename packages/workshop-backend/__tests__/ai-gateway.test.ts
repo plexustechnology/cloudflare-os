@@ -12,6 +12,7 @@ import {
   gatewayRunConfig,
   getAiGatewayLogCost,
   getGatewayModels,
+  withDeploymentCredentials,
 } from "../src/ai-gateway.js";
 import { getModel } from "../src/ai-models.js";
 
@@ -185,14 +186,54 @@ describe("GatewayModels", () => {
       AZURE_FOUNDRY_MODEL: id, AZURE_FOUNDRY_API_KEY: "synthetic-key" });
     const enabled = new GatewayModels(gateway, NO_CONFIG);
     expect(enabled.list().some(model => model.id === id)).toBe(true);
+    // The key stays out of the resolved config, which a model binding stores; it is read from
+    // the environment per request instead (see withDeploymentCredentials).
     expect(enabled.resolve(id)?.config).toMatchObject({ provider: "azure-foundry",
-      apiToken: "synthetic-key", apiUrl: "https://synthetic.example/openai/v1" });
+      apiToken: "", apiUrl: "https://synthetic.example/openai/v1",
+      deploymentCredentials: "azure-foundry" });
+    expect(JSON.stringify(enabled.resolve(id))).not.toContain("synthetic-key");
+    expect(JSON.stringify(enabled.runConfig(id))).not.toContain("synthetic-key");
     expect(enabled.addableProviders).not.toContain("azure-foundry");
     const hidden = new GatewayModels(gateway, { ...NO_CONFIG, modelModes: { [id]: "hidden" } });
     expect(hidden.list().some(model => model.id === id)).toBe(false);
     expect(hidden.resolve(id)).toBeDefined();
     const disabled = new GatewayModels(gateway, { ...NO_CONFIG, modelModes: { [id]: "disabled" } });
     expect(disabled.resolve(id)).toBeUndefined();
+  });
+
+  describe("withDeploymentCredentials", () => {
+    const id = "gpt-5.6-sol-1";
+    const azureEnv = (key: string) => ({ ...gatewayEnv("cloudflare"),
+      AZURE_FOUNDRY_ENDPOINT: "https://synthetic.example/openai/v1",
+      AZURE_FOUNDRY_MODEL: id, AZURE_FOUNDRY_API_KEY: key });
+
+    it("gives the deployment's model the key the environment holds now", () => {
+      const resolved = new GatewayModels(new AiGatewayConfig(azureEnv("first-key")), NO_CONFIG)
+          .resolve(id)!.config;
+      if (resolved.provider === "provider-connection") throw new Error("unexpected");
+      // A config resolved before the key was rotated runs with the rotated key.
+      expect(withDeploymentCredentials(azureEnv("rotated-key"), resolved)).toMatchObject({
+        provider: "azure-foundry", model: id, apiToken: "rotated-key",
+        apiUrl: "https://synthetic.example/openai/v1",
+      });
+      expect(resolved.apiToken).toBe("");
+    });
+
+    it("leaves a model a user added under the provider with its own token", () => {
+      const own = { provider: "azure-foundry" as const, model: id, apiToken: "user-key",
+        apiUrl: "https://user.example/openai/v1" };
+      expect(withDeploymentCredentials(azureEnv("deployment-key"), own)).toBe(own);
+    });
+
+    it("refuses the deployment's model once the environment no longer provides it", () => {
+      const marked = { provider: "azure-foundry" as const, model: id, apiToken: "",
+        apiUrl: "https://synthetic.example/openai/v1", deploymentCredentials: "azure-foundry" as const };
+      expect(() => withDeploymentCredentials(gatewayEnv("cloudflare"), marked))
+          .toThrow("This deployment no longer provides the Azure Foundry model.");
+      expect(() => withDeploymentCredentials(
+          { ...azureEnv("deployment-key"), AZURE_FOUNDRY_MODEL: "other-model" }, marked))
+          .toThrow("This deployment no longer provides the Azure Foundry model.");
+    });
   });
 
   it("offers each catalog model in its default mode, on enabled providers only", () => {
