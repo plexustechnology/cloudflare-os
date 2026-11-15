@@ -1,7 +1,7 @@
 import type { RpcPromise, RpcStub } from "capnweb";
 import type {
   ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
-  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
+  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiLegacyModelConfig, AuthenticatedApi, GadgetClient,
   Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -18,7 +18,7 @@ const RECONNECT_INITIAL_BACKOFF_MS = 250;
 
 type UserModel = {
   profile: AiChatAuthorInfo;
-  config: AiModelConfig;
+  config: AiLegacyModelConfig;
 };
 export type AgentTurnOptions = {
   timeoutMs?: number;

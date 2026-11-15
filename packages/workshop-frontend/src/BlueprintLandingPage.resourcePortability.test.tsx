@@ -26,13 +26,13 @@ const vendor = { displayName: 'CIPP', url: 'https://cipp.example' }
 const resource: SupportedResource = { urlPattern: PROD_PATTERN, title: 'CIPP customers', description: 'Selected customer tenants' }
 
 const mocks = vi.hoisted(() => ({
-  getBlueprint: vi.fn(),
-  listGatekeeperVendors: vi.fn(),
-  subscribeConnectedAccounts: vi.fn(),
-  startResourceConfigurator: vi.fn(),
-  collect: vi.fn(),
-  disposeFrame: vi.fn(),
-  disposeSubscription: vi.fn(),
+  getBlueprint: vi.fn<(id: string) => Promise<BlueprintPublicInfo>>(),
+  listGatekeeperVendors: vi.fn<() => Promise<unknown>>(),
+  subscribeConnectedAccounts: vi.fn<(subscriber: ConnectedAccountsSubscriber) => unknown>(),
+  startResourceConfigurator: vi.fn<(accountId: number, urlPattern: string) => Promise<unknown>>(),
+  collect: vi.fn<() => Promise<string>>(),
+  disposeFrame: vi.fn<() => void>(),
+  disposeSubscription: vi.fn<() => void>(),
   authenticatedApi: {
     listModels: async () => [],
     getAdminApi: async () => null,
@@ -83,7 +83,7 @@ vi.mock('./components/WorkshopControls', () => ({
 vi.mock('@cloudflare/kumo', () => {
   const Wrapper = ({ children }: { children?: ReactNode }) => <div>{children}</div>
   const Dialog = Object.assign(Wrapper, {
-    Root: ({ open, children }: { open?: boolean; children?: ReactNode }) => open ? <div role="dialog">{children}</div> : null,
+    Root: ({ open, children }: { open?: boolean; children?: ReactNode }) => open ? <dialog open>{children}</dialog> : null,
     Title: Wrapper,
     Description: Wrapper,
     Close: () => null,
