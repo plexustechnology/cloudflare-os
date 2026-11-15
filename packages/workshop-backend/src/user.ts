@@ -63,6 +63,17 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
  */
 export const CLOUDFLARE_VENDOR_ID = "cloudflare";
 
+/**
+ * A stored model a user added, without the marker by which a deployment's own model runs with the
+ * deployment's credentials (see AiLegacyModelConfig.deploymentCredentials), which no stored model
+ * may claim.
+ */
+function ownModel(record: UserAiModelRecord | undefined): UserAiModelRecord | undefined {
+  if (!record || !("deploymentCredentials" in record.config)) return record;
+  let {deploymentCredentials, ...config} = record.config;
+  return {...record, config};
+}
+
 const withholdSecret = (secret: string) => secret === "" ? "" : null;
 
 /** Withholds the non-empty secrets of `config`, for returning it to a client. */
@@ -634,7 +645,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
     // deployment's to set on its own models.
-    let {reasoning, compactionInputBudget, behavesLike, capabilities, ...own} = config;
+    let {reasoning, compactionInputBudget, behavesLike, capabilities, deploymentCredentials,
+        ...own} = config;
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config: own});
@@ -867,7 +879,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
     if (models?.get(id)) return models.resolve(id);
-    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    return models && !models.userModels ? undefined : ownModel(this.storage.aiModels.get(id));
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
