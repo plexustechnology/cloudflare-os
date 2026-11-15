@@ -61,9 +61,12 @@ const MODEL_TEST: GatewayTest = {
 };
 
 // What a failed test tells the admin: the provider's or the gateway's own words with the
-// deployment's gateway token cut out, should they repeat it, on one line and cut short.
-function testFailureMessage(text: string, apiToken: string | undefined): string {
-  if (apiToken) text = text.replaceAll(apiToken, "[redacted]");
+// deployment's gateway token and Azure Foundry key cut out, should they repeat them, on one line
+// and cut short.
+function testFailureMessage(text: string, secrets: (string | undefined)[]): string {
+  for (let secret of secrets) {
+    if (secret) text = text.replaceAll(secret, "[redacted]");
+  }
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
@@ -718,7 +721,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       let status = error instanceof AgentTurnError ? error.statusCode : undefined;
       failure = {
         ...(status !== undefined && { status }),
-        message: testFailureMessage(message, gateway.apiToken),
+        message: testFailureMessage(
+            message, [gateway.apiToken, gateway.azureFoundry?.apiKey]),
       };
     }
     // The failure message stays out of the log: a provider words it.
