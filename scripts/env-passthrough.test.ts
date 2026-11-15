@@ -77,8 +77,11 @@ const EXPECTED: Record<string, ExpectedArea> = {
     ],
     injected: ["NODE_ENV"],
   },
+  // `vitest.provider-loop.config.ts` is a QA-only fixture config run directly with
+  // `vitest run --config`, never by a vp task, and forwards only a 0/1 diagnostic switch.
   "packages/workshop-backend": {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
+    external: ["QA_GRACEFUL_EVICTION_DIAGNOSTIC"],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
