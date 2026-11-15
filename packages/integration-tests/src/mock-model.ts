@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, AiLegacyModelConfig } from "@gadgets/workshop-shared/api";
 import type { Handler } from "./network-interceptor.js";
 
 const CHAT_COMPLETIONS_SUFFIX = "/chat/completions";
@@ -58,7 +58,7 @@ export const SCRIPTED_MODEL_PROFILE: AiChatAuthorInfo = {
   id: SCRIPTED_MODEL_ID,
   name: "Scripted model",
 };
-export const SCRIPTED_MODEL_CONFIG: AiModelConfig = {
+export const SCRIPTED_MODEL_CONFIG: AiLegacyModelConfig = {
   provider: "cloudflare",
   model: SCRIPTED_MODEL_ID,
   accountId: "test-account",
@@ -167,7 +167,7 @@ let routedAccountSeq = 0;
 
 /** One test's script, answering only requests made with its `userModel`. */
 export type RoutedScriptedModel = Omit<ScriptedChatCompletions, "handler"> & {
-  userModel: { profile: AiChatAuthorInfo; config: AiModelConfig };
+  userModel: { profile: AiChatAuthorInfo; config: AiLegacyModelConfig };
 };
 
 /**
