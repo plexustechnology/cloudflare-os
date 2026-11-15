@@ -31,6 +31,10 @@ describe("external message model selection", () => {
         expect(context.aiModel?.profile.id).toBe(azureModel);
         expect(context.aiModel?.config.provider).toBe("azure-foundry");
         expect(context.quickModel).toEqual(context.aiModel?.config);
+        // A model binding stores this config (see newAiModelGatekeeper), so the key stays out.
+        expect(JSON.stringify(context)).not.toContain("synthetic-azure-key");
+        expect(context.aiModel?.config).toMatchObject(
+            { apiToken: "", deploymentCredentials: "azure-foundry" });
       }
       expect(await instance.getPreferredModel()).toBe(workersModel);
       expect((await instance.getExternalMessageChatContext(null)).aiModel?.profile.id).toBe(workersModel);
