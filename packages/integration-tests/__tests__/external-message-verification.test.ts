@@ -126,7 +126,7 @@ describe("external-message verification", () => {
       // through to the model check.
       await expect(submitExternalMessage({ callerEmail: bob, gadgetKey, prompt: "hi" }))
           .resolves.toMatchObject({
-            accepted: false, message: expect.stringMatching(/could not be verified/i) });
+            accepted: false, message: expect.stringMatching(/verify your access/i) });
 
       // Opening the workspace verifies him; the same submission now passes the gate and fails
       // only on the missing AI model, exactly like the owner's did.
@@ -142,15 +142,16 @@ describe("external-message verification", () => {
             accepted: false, message: expect.stringMatching(/AI model/i) });
 
       // The gatekeeper now revokes Bob's underlying access. His persisted observer record is
-      // untouched, so only a live addObserver re-verification on this submission can notice --
-      // and the gatekeeper's own refusal reason appearing in the reply is the proof that round
-      // trip happened, since nothing persisted in the Workshop contains it. An implementation
-      // that merely checked the record would keep accepting him here.
+      // untouched, so only a live addObserver re-verification on this submission can notice: an
+      // implementation that merely checked the record would pass the gate and fail on the missing
+      // AI model instead. The Plexus fork deliberately returns a generic verification message
+      // rather than echoing the gatekeeper's refusal reason to the external channel.
       await setVerifyOutcome(accountLabel(bobAccount), { allow: false, reason: DENIED_REASON });
       const revoked = await submitExternalMessage({ callerEmail: bob, gadgetKey, prompt: "hi" });
       if (revoked.accepted) throw new Error("The revoked submission was accepted");
-      expect(revoked.message).toMatch(/could not be verified/i);
-      expect(revoked.message).toContain(DENIED_REASON);
+      expect(revoked.message).toMatch(/verify your access/i);
+      expect(revoked.message).not.toContain(DENIED_REASON);
+      expect(revoked.message).not.toMatch(/AI model/i);
     });
   });
 
