@@ -1362,6 +1362,28 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
+  it("keeps the deployment's Azure Foundry key out of a failure's message", async () => {
+    const { testModel } = tested(answered, {
+      AZURE_FOUNDRY_ENDPOINT: "https://deployment.example/openai/v1",
+      AZURE_FOUNDRY_MODEL: "gpt-5.6-sol-1", AZURE_FOUNDRY_API_KEY: "azure-deployment-key",
+    });
+    const sent: (string | null)[] = [];
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      sent.push(new Request(input, init).headers.get("api-key"));
+      return new Response("Access denied for key azure-deployment-key.", { status: 401 });
+    });
+    try {
+      const { result } = await testModel("gpt-5.6-sol-1");
+      expect(sent).toEqual(["azure-deployment-key"]);
+      expect(result).toMatchObject({ model: "gpt-5.6-sol-1", ok: false });
+      const { message } = result as { message: string };
+      expect(message).not.toContain("azure-deployment-key");
+      expect(message).toContain("[redacted]");
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
   it("reports a refused request with its status, and logs neither its message nor the prompt",
       async () => {
     const { testModel, requests } = tested(refusal(401, "Incorrect API key\n for gateway-token."));
